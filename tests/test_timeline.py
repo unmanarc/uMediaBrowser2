@@ -51,6 +51,7 @@ class TimelineTests(unittest.TestCase):
                 CREATE TABLE AlbumRoots(id INTEGER PRIMARY KEY, identifier TEXT, specificPath TEXT);
                 CREATE TABLE Albums(id INTEGER PRIMARY KEY, albumRoot INTEGER, relativePath TEXT, UNIQUE(albumRoot, relativePath));
                 CREATE TABLE Images(id INTEGER PRIMARY KEY, album INTEGER, name TEXT, modificationDate DATETIME, fileSize INTEGER);
+                CREATE TABLE ImageInformation(imageid INTEGER PRIMARY KEY, creationDate DATETIME);
             ''')
             identifier = 'volumeid:?path=' + urllib.parse.quote(str(cls.library), safe='/') + '&fileuuid=test'
             db.execute('INSERT INTO AlbumRoots VALUES(1, ?, ?)', (identifier, '/'))
@@ -193,7 +194,7 @@ class TimelineTests(unittest.TestCase):
         files = self.api(act='timeline_event', event=across['id'])['items']
         self.assertEqual([i['folder'] for i in files], ['/A beach', '/B meal'])
         self.assertEqual([i['name'] for i in files], ['same.jpg','same.jpg'])
-        self.assertTrue(all(i['timestamp'] == i['mtime'] and i['date_source'] == 'digikam' for i in files))
+        self.assertTrue(all(i['timestamp'] == i['mtime'] and i['date_source'] == 'modificationDate' for i in files))
 
     def test_digikam_dates_and_read_only_database(self):
         before = hashlib.sha256(self.database.read_bytes()).hexdigest()
@@ -206,7 +207,7 @@ class TimelineTests(unittest.TestCase):
             items = self.api(act='timeline_event', event=event['id'])['items']
             original = next(i for i in items if i['name'] == 'original.jpg')
             created = next(i for i in items if i['name'] == 'create.jpg')
-            self.assertEqual(original['date_source'], 'digikam')
+            self.assertEqual(original['date_source'], 'modificationDate')
             self.assertEqual(original['timestamp'], 1_580_733_296)
             self.assertNotEqual(original['timestamp'], (self.root/original['path'].lstrip('/')).stat().st_mtime)
             self.assertEqual(created['timestamp'] - original['timestamp'], 60)
@@ -215,6 +216,84 @@ class TimelineTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(self.database.read_bytes()).hexdigest(), before)
         finally:
             self.database.chmod(mode)
+
+    def test_filename_creation_and_modification_date_priority(self):
+        def stamp(date):
+            value = datetime.datetime.fromisoformat(date)
+            if value.tzinfo is None: value = value.replace(tzinfo=datetime.timezone.utc)
+            return int(value.timestamp())
+
+        modified = '2031-10-17T10:40:00'
+        created = '2020-02-03T12:34:56.123'
+        # Different capture, metadata and processing dates expose the precedence.
+        cases = [
+            ('IMG_20170706-125641_001_.jpg', created, '2017-07-06T12:56:41', 'filename'),
+            ('IMG_20240229_230405_0000_Canon-EOS-M50.CR3', created, '2024-02-29T23:04:05', 'filename'),
+            ('img_19650203-123456-edited.jpg', created, '1965-02-03T12:34:56', 'filename'),
+            ('IMG-20140128-WA0002.jpg', created, '2014-01-28T00:00:00', 'filename'),
+            ('IMG-20161014-WA0026 (1).jpg', created, '2016-10-14T00:00:00', 'filename'),
+            ('IMG-20140717-WA0003~2.jpg', created, '2014-07-17T00:00:00', 'filename'),
+            ('IMG_20240229.jpg', created, '2024-02-29T00:00:00', 'filename'),
+            ('IMG_1234.JPG', created, created, 'creationDate'),
+            ('IMG_183061182304648.jpeg', created, created, 'creationDate'),
+            ('holiday-20170706-125641.jpg', created, created, 'creationDate'),
+            ('IMG_20230229-123456.jpg', created, created, 'creationDate'),  # non-leap year
+            ('IMG_20240431-123456.jpg', created, created, 'creationDate'),  # impossible day
+            ('IMG_20241301-123456.jpg', created, created, 'creationDate'),
+            ('IMG_20240229-250000.jpg', created, created, 'creationDate'),
+            ('IMG_20240229-126000.jpg', created, created, 'creationDate'),
+            ('IMG_20240229-123460.jpg', created, created, 'creationDate'),
+            ('IMG_20240229-1234567.jpg', created, created, 'creationDate'),  # longer counter
+            ('IMG_00000101-123456.jpg', created, created, 'creationDate'),
+            ('with-offset.jpg', '2025-01-01T03:04:05+03:00', '2025-01-01T00:04:05', 'creationDate'),
+            ('historical-capture.jpg', '1965-02-03T12:34:56.000', '1965-02-03T12:34:56', 'creationDate'),
+            ('no-information-row.jpg', None, modified, 'modificationDate'),
+            ('null-creation.jpg', None, modified, 'modificationDate'),
+            ('empty-creation.jpg', '', modified, 'modificationDate'),
+            ('invalid-creation.jpg', 'bad date', modified, 'modificationDate'),
+            ('invalid-creation-day.jpg', '2023-02-29T12:00:00', modified, 'modificationDate'),
+            ('IMG_20241301-123456-both-invalid.jpg', 'bad date', modified, 'modificationDate'),
+        ]
+        files = []
+        try:
+            for name, creation, expected, source in cases:
+                files.append(self.photo('Priority/'+name, stamp(modified)))
+                if name != 'no-information-row.jpg':
+                    with sqlite_connection(self.database) as db:
+                        imageid = db.execute('SELECT id FROM Images WHERE name=?', (name,)).fetchone()[0]
+                        db.execute('INSERT INTO ImageInformation(imageid,creationDate) VALUES(?,?)', (imageid, creation))
+            # A valid filename also works when neither database date is usable.
+            valid_only = 'IMG_20180709-101112-no-db-date.jpg'
+            files.append(self.photo('Priority/'+valid_only, stamp(modified)))
+            with sqlite_connection(self.database) as db:
+                db.execute('UPDATE Images SET modificationDate=NULL WHERE name=?', (valid_only,))
+            cases.append((valid_only, None, '2018-07-09T10:11:12', 'filename'))
+            original_db = self.database.read_bytes()
+            found = {}
+            events = self.all_events()
+            for event in events:
+                cursor = 0
+                while True:
+                    page = self.api(act='timeline_event', event=event['id'], cursor=cursor)
+                    for item in page['items']:
+                        if item['folder'] == '/Priority': found[item['name']] = item
+                    if not page['has_more']: break
+                    cursor = page['next']
+            for name, creation, expected, source in cases:
+                with self.subTest(name=name):
+                    self.assertIn(name, found)
+                    item = found[name]
+                    self.assertEqual(item['timestamp'], stamp(expected))
+                    self.assertEqual(item['date_source'], source)
+                    self.assertEqual(item['mtime'], 0 if name == valid_only else stamp(modified))
+            # Feed order and event membership must use the selected capture date too.
+            self.assertEqual([e['end'] for e in events], sorted((e['end'] for e in events), reverse=True))
+            self.assertEqual(self.database.read_bytes(), original_db)
+        finally:
+            for path in files: path.unlink()
+            with sqlite_connection(self.database) as db:
+                db.execute("DELETE FROM ImageInformation WHERE imageid IN (SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Priority')")
+                db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Priority')")
 
     def test_live_database_changes_without_refresh(self):
         before = self.api(act='timeline')

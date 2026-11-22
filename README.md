@@ -71,9 +71,27 @@ built with URI support (`USE_URI`). The database is never created or modified.
 `--rootdir` enter the timeline. Collection identifiers with `path=` (including
 percent-encoded paths) and absolute `specificPath` values are supported.
 
-Dates come exclusively from **`Images.modificationDate`**, and file sizes come
-from `Images.fileSize`. ISO dates without an explicit timezone use server local
-time. There is no recursive media scan or EXIF extraction for the timeline.
+Timeline dates use the first valid source in this order:
+
+1. A capture date embedded in an `IMG` filename, such as
+   `IMG_20170706-125641_001_.jpg` or `IMG_20240229_230405_Canon.CR3`.
+2. **`ImageInformation.creationDate`**, already extracted by digiKam.
+3. **`Images.modificationDate`**.
+
+The filename patterns are case-insensitive and anchored at the beginning:
+`^IMG[_-]([0-9]{8})[-_]([0-9]{6})($|[^0-9])`,
+`^IMG[_-]([0-9]{8})-WA[0-9]`, and `^IMG[_-]([0-9]{8})($|[.])`.
+Date-only names such as `IMG-20140128-WA0002.jpg` and `IMG_20240229.jpg`
+use midnight. Camera counters such as `IMG_1234.JPG`, malformed patterns and
+impossible dates fall through to the next source. SQLite implements the pattern
+checks using GLOB digit classes and fixed positions, without a REGEXP extension.
+
+File sizes come from `Images.fileSize`. Dates without an explicit timezone use
+server local time; explicit offsets are respected. There is no recursive media
+scan or EXIF extraction for the timeline. JSON exposes `date_source` as
+`filename`, `creationDate` or `modificationDate`; `mtime` retains the original
+modification date (or 0 if unavailable).
+
 `TimelineDatabase` supplies feed pages, event pages and random samples through
 request-local read-only transactions. SQL joins the digiKam tables, constrains
 paths to `--rootdir`, converts dates, orders the results and filters event time
@@ -84,7 +102,7 @@ snapshot cache or startup scan. SQLite may use temporary storage for sorting.
 Exact existing-file totals and six-hour event boundaries require streaming the
 matching ordered rows and checking file existence. Missing files, symlinks and
 entries without valid dates are skipped before counting or pagination. Adjacent
-modification dates belong to the same event when the gap is at most **6 hours**,
+selected capture dates belong to the same event when the gap is at most **6 hours**,
 regardless of their folders. If the database is missing or cannot be read, the
 timeline shows an error and the folder browser continues to work as usual.
 
