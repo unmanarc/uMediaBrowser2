@@ -280,7 +280,8 @@ function appendEventItems(items){
     var thumb = document.createElement('div'); thumb.className = 'thumb'; thumb.appendChild(thumbnail(item,eventSize * 2));
     var name = document.createElement('div'); name.className = 'name'; name.textContent = item.name;
     var meta = document.createElement('div'); meta.className = 'meta';
-    meta.textContent = new Date(item.timestamp * 1000).toLocaleString() + ' · digiKam modification date';
+    var dateLabel = item.date_source === 'filename' ? 'Filename date' : item.date_source === 'creationDate' ? 'digiKam creation date' : 'digiKam modification date';
+    meta.textContent = new Date(item.timestamp * 1000).toLocaleString() + ' · ' + dateLabel;
     button.append(thumb,name,meta);
     button._item = item;
     button.onclick = function(){ carousel(eventView.info,item.index,eventView.items); };
