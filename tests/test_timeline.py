@@ -717,6 +717,7 @@ class TimelineTests(unittest.TestCase):
         with self.filter_library():
             with sqlite_connection(self.database) as db:
                 db.execute('UPDATE Tags SET pid=9104 WHERE id=9101')
+                db.execute('UPDATE Tags SET pid=9101 WHERE id=9105')
             baseline = self.api(act='timeline')['total_items']
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -735,10 +736,11 @@ class TimelineTests(unittest.TestCase):
                         catalog = api(act='timeline_tags')['tags']; break
                     except OSError: time.sleep(.025)
                 else: self.fail('Server with tag exclusions did not start')
-                self.assertEqual({tag['name'] for tag in catalog}, {'Holiday', 'Esther'})
+                # Aaron -> Holiday -> Esther is hidden; another Holiday branch remains.
+                self.assertEqual({tag['id'] for tag in catalog}, {9102})
                 self.assertTrue(all(tag['path'] == tag['name'] for tag in catalog))
                 self.assertEqual(api(act='timeline')['total_items'], baseline)
-                # Hidden parents keep their child tags and all tagged files navigable.
+                # Hiding an entire tag branch keeps all its media navigable.
                 query = self.filter_json(dict(field='tag',op='eq',value='Aaron'))
                 feed = api(act='timeline', filter=query)
                 self.assertEqual(feed['total_items'], 2)

@@ -459,17 +459,18 @@ public:
         {
             Tag tag{id.getValue(), parent.getValue(), name.getValue(), name.getValue(), static_cast<size_t>(count.getValue())};
             if (hidden(tag.name)) continue;
-            bool internal = internalTags.count(tag.id) || tag.name == "_Digikam_Internal_Tags_" || tag.name == "_Digikam_root_tag_";
+            bool excluded = internalTags.count(tag.id) || tag.name == "_Digikam_Internal_Tags_" || tag.name == "_Digikam_root_tag_";
             std::unordered_set<int64_t> seen{tag.id};
             auto ancestor = hierarchy.find(tag.parent);
             while (ancestor != hierarchy.end() && ancestor->first != 0 && seen.insert(ancestor->first).second)
             {
-                internal = internal || internalTags.count(ancestor->first) || ancestor->second.name == "_Digikam_Internal_Tags_";
-                if (!ancestor->second.name.empty() && ancestor->second.name != "_Digikam_root_tag_" && !hidden(ancestor->second.name))
+                excluded = excluded || internalTags.count(ancestor->first) ||
+                    ancestor->second.name == "_Digikam_Internal_Tags_" || hidden(ancestor->second.name);
+                if (!ancestor->second.name.empty() && ancestor->second.name != "_Digikam_root_tag_")
                     tag.path = ancestor->second.name + " / " + tag.path;
                 ancestor = hierarchy.find(ancestor->second.parent);
             }
-            if (!internal) result.push_back(std::move(tag));
+            if (!excluded) result.push_back(std::move(tag));
         }
         checkQuery(query, true);
         std::sort(result.begin(), result.end(), [](const Tag &a, const Tag &b) {
