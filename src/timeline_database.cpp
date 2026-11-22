@@ -278,7 +278,10 @@ public:
     size_t walk(const Event *range, bool byFolder, const std::function<void(Media)> &consume, size_t &skipped)
     {
         auto input = bindings;
-        std::string sql = scope + " SELECT path, folder, timestamp, size, mtime, date_source FROM media";
+        std::string sql = scope + " SELECT path, folder, timestamp, size, mtime, date_source, ";
+        // Only event reads need assignments. Keep the full-library count scan light.
+        sql += range ? "(SELECT group_concat(DISTINCT tagid) FROM ImageTags WHERE imageid=media.imageid)" : "NULL";
+        sql += " FROM media";
         if (range)
         {
             sql += " WHERE timestamp BETWEEN :start AND :end";
@@ -286,9 +289,9 @@ public:
             input[":end"] = std::make_shared<INT64>(range->end);
         }
         sql += byFolder ? " ORDER BY folder, timestamp DESC, path" : " ORDER BY timestamp DESC, path";
-        STRING path, folder, dateSource;
+        STRING path, folder, dateSource, tagIds;
         INT64 timestamp, size, modified;
-        auto query = connection.qSelect(sql, input, {&path, &folder, &timestamp, &size, &modified, &dateSource});
+        auto query = connection.qSelect(sql, input, {&path, &folder, &timestamp, &size, &modified, &dateSource, &tagIds});
         checkQuery(query);
         size_t candidates = 0;
         while (query->step())
@@ -304,6 +307,21 @@ public:
             item.mtime = modified.getValue();
             item.dateSource = dateSource.getValue();
             item.size = static_cast<uintmax_t>(std::max<int64_t>(0, size.getValue()));
+            if (range && !query->isNull(6))
+            {
+                const auto ids = tagIds.getValue();
+                const char *position = ids.data(), *end = position + ids.size();
+                while (position < end)
+                {
+                    int64_t id;
+                    const auto parsed = std::from_chars(position, end, id);
+                    if (parsed.ec != std::errc{}) break;
+                    auto tag = mediaTags.find(id);
+                    if (tag != mediaTags.end()) item.tags.push_back(tag->second);
+                    position = parsed.ptr == end ? end : parsed.ptr + 1;
+                }
+                std::sort(item.tags.begin(), item.tags.end(), tagLess);
+            }
             consume(std::move(item));
         }
         checkQuery(query, true);
@@ -384,6 +402,12 @@ public:
      */
     EventPage readEvent(Event event, size_t cursor, size_t limit, bool randomSamples)
     {
+        if (!mediaTagsLoaded)
+        {
+            mediaTags = tagDefinitions();
+            mediaTagsLoaded = true;
+        }
+        std::map<int64_t, Tag> eventTags;
         EventPage page;
         page.event = std::move(event);
         page.event.count = 0;
@@ -391,6 +415,7 @@ public:
         thread_local std::mt19937_64 random(std::random_device{}());
         const size_t candidates = walk(&page.event, true, [&](Media item) {
             item.index = page.event.count++;
+            for (const auto &tag : item.tags) eventTags.emplace(tag.id, tag);
             if (randomSamples)
             {
                 auto &samples = page.event.samples;
@@ -404,6 +429,9 @@ public:
             }
             else if (item.index >= cursor && page.items.size() < limit) page.items.push_back(std::move(item));
         }, skipped);
+        page.event.tags.clear();
+        for (const auto &entry : eventTags) page.event.tags.push_back(entry.second);
+        std::sort(page.event.tags.begin(), page.event.tags.end(), tagLess);
         if (!candidates) throw Error(ErrorKind::NotFound, "Event not found");
         if (cursor > page.event.count) throw Error(ErrorKind::InvalidArgument, "Invalid cursor");
         page.next = cursor + page.items.size();
@@ -420,12 +448,46 @@ public:
      */
     std::vector<Tag> readTags(const std::string &memoryURI, const std::vector<std::regex> &exclusions)
     {
+        checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
+        const auto definitions = tagDefinitions(exclusions);
+        INT64 id, count;
+        std::vector<Tag> result;
+        auto query = connection.qSelect(scope + R"SQL(
+            SELECT it.tagid, count(DISTINCT i.imageid)
+            FROM image_dates i JOIN mem.existing_files f ON f.path=i.path
+            JOIN ImageTags it ON it.imageid=i.imageid
+            GROUP BY it.tagid
+        )SQL", bindings, {&id, &count});
+        checkQuery(query);
+        while (query->step())
+        {
+            auto tag = definitions.find(id.getValue());
+            if (tag == definitions.end()) continue;
+            result.push_back(tag->second);
+            result.back().count = static_cast<size_t>(count.getValue());
+        }
+        checkQuery(query, true);
+        std::sort(result.begin(), result.end(), tagLess);
+        return result;
+    }
+
+private:
+    static bool tagLess(const Tag &a, const Tag &b)
+    {
+        return a.path == b.path ? a.id < b.id : a.path < b.path;
+    }
+
+    /** @brief Resolve public names and paths once, hiding technical branches.
+     * Picker exclusions are optional; informational badges retain those tags.
+     * Cycle detection also protects malformed digiKam hierarchies.
+     */
+    std::map<int64_t, Tag> tagDefinitions(const std::vector<std::regex> &exclusions = {})
+    {
         const auto hidden = [&](const std::string &name) {
             return std::any_of(exclusions.begin(), exclusions.end(), [&](const std::regex &pattern) {
                 return std::regex_search(name, pattern);
             });
         };
-        checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
         // digiKam marks technical tags with TagProperties.internalTag. Older
         // databases can also identify them through the reserved internal branch.
         std::unordered_set<int64_t> internalTags;
@@ -438,7 +500,7 @@ public:
             checkQuery(query, true);
         }
         std::map<int64_t, Tag> hierarchy;
-        INT64 id, parent, count;
+        INT64 id, parent;
         STRING name;
         {
             auto query = connection.qSelect("SELECT id, COALESCE(pid,0), COALESCE(name,'') FROM Tags", {}, {&id, &parent, &name});
@@ -446,18 +508,12 @@ public:
             while (query->step()) hierarchy.emplace(id.getValue(), Tag{id.getValue(), parent.getValue(), name.getValue(), {}, 0});
             checkQuery(query, true);
         }
-        std::vector<Tag> result;
-        auto query = connection.qSelect(scope + R"SQL(
-            SELECT t.id, COALESCE(t.pid,0), t.name, count(DISTINCT i.imageid)
-            FROM image_dates i JOIN mem.existing_files f ON f.path=i.path
-            JOIN ImageTags it ON it.imageid=i.imageid JOIN Tags t ON t.id=it.tagid
-            WHERE trim(COALESCE(t.name,''), char(9)||char(10)||char(13)||' ')<>''
-            GROUP BY t.id, t.pid, t.name
-        )SQL", bindings, {&id, &parent, &name, &count});
-        checkQuery(query);
-        while (query->step())
+        std::map<int64_t, Tag> result;
+        for (const auto &entry : hierarchy)
         {
-            Tag tag{id.getValue(), parent.getValue(), name.getValue(), name.getValue(), static_cast<size_t>(count.getValue())};
+            Tag tag = entry.second;
+            if (tag.name.find_first_not_of(" \t\n\r") == std::string::npos) continue;
+            tag.path = tag.name;
             if (hidden(tag.name)) continue;
             bool excluded = internalTags.count(tag.id) || tag.name == "_Digikam_Internal_Tags_" || tag.name == "_Digikam_root_tag_";
             std::unordered_set<int64_t> seen{tag.id};
@@ -470,16 +526,11 @@ public:
                     tag.path = ancestor->second.name + " / " + tag.path;
                 ancestor = hierarchy.find(ancestor->second.parent);
             }
-            if (!excluded) result.push_back(std::move(tag));
+            if (!excluded) result.emplace(tag.id, std::move(tag));
         }
-        checkQuery(query, true);
-        std::sort(result.begin(), result.end(), [](const Tag &a, const Tag &b) {
-            return a.path == b.path ? a.id < b.id : a.path < b.path;
-        });
         return result;
     }
 
-private:
     /** @brief Compile validated rules into parameterized SQL over Images i/info.
      * EXISTS keeps tag/metadata comparisons independent and avoids duplicate media
      * for multiple matching tags. Negation complements a total boolean predicate,
@@ -601,18 +652,18 @@ private:
                   AND )SQL" + predicate + R"SQL(
                 LIMIT -1 OFFSET 0
             ), filename_times AS (
-                SELECT path, folder, size, creation_date, modification_date,
+                SELECT imageid, path, folder, size, creation_date, modification_date,
         )SQL" + isoTimestampSQL("filename_date") + R"SQL( AS filename_time
                 FROM image_dates
                 LIMIT -1 OFFSET 0
             ), timestamps AS (
-                SELECT path, folder, size, modification_date, filename_time,
+                SELECT imageid, path, folder, size, modification_date, filename_time,
                     CASE WHEN filename_time IS NULL THEN
         )SQL" + isoTimestampSQL("creation_date") + R"SQL( END AS creation_time
                 FROM filename_times
                 LIMIT -1 OFFSET 0
             ), media AS (
-                SELECT path, folder, size,
+                SELECT imageid, path, folder, size,
                     COALESCE(filename_time, creation_time,
         )SQL" + isoTimestampSQL("modification_date") + ") AS timestamp, COALESCE(" +
                 isoTimestampSQL("modification_date") + R"SQL(,0) AS mtime,
@@ -643,6 +694,8 @@ private:
         return known->second && fs::is_regular_file(fs::symlink_status(file, ec)) && !ec;
     }
 
+    std::map<int64_t, Tag> mediaTags; ///< Request-local public names/paths, shared by displayed events.
+    bool mediaTagsLoaded = false;
     std::string root; ///< Canonical HTTP root for all statements in this request.
     fs::path database; ///< Nearest discovered database; no creation fallback.
     std::string stamp; ///< File/WAL identity before the read transaction.

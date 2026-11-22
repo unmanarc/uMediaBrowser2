@@ -55,6 +55,16 @@ public:
         ErrorKind kind; ///< Category consumed by the HTTP adapter.
     };
 
+    /** @brief Public digiKam tag; ancestors supply its descriptive path. */
+    struct Tag
+    {
+        int64_t id = 0;
+        int64_t parent = 0;
+        std::string name; ///< Exact name used by the existing tag filter contract.
+        std::string path; ///< Ancestor names for distinguishing tag branches.
+        size_t count = 0; ///< Distinct assigned files (tag catalog only).
+    };
+
     /** @brief One existing file; paths are relative to the configured HTTP root. */
     struct Media
     {
@@ -65,6 +75,7 @@ public:
         std::string dateSource; ///< "filename", "creationDate" or "modificationDate".
         uintmax_t size = 0;    ///< Images.fileSize; no filesystem metadata extraction.
         size_t index = 0;      ///< Position in the event's folder/time ordering.
+        std::vector<Tag> tags; ///< Assigned public tags, sorted by full path.
     };
 
     /** @brief A contiguous run of existing files separated by less than gapSeconds(). */
@@ -75,6 +86,7 @@ public:
         int64_t end = 0;   ///< Newest selected capture time, inclusive.
         size_t count = 0;  ///< Number of currently existing files in the event.
         std::vector<Media> samples; ///< Up to six random members with their gallery positions.
+        std::vector<Tag> tags; ///< Union of assigned public tags across all existing event files.
     };
 
     /** @brief A bounded event feed and totals calculated by streaming the query. */
@@ -98,16 +110,6 @@ public:
         std::vector<Media> items; ///< Requested gallery page; never the entire event.
         size_t next = 0; ///< Offset among existing event files.
         bool hasMore = false; ///< Whether additional existing files follow.
-    };
-
-    /** @brief Selectable nonempty tag assigned to files in the path snapshot. */
-    struct Tag
-    {
-        int64_t id = 0;
-        int64_t parent = 0;
-        std::string name; ///< Exact name used by the existing tag filter contract.
-        std::string path; ///< Ancestor names for distinguishing tag branches.
-        size_t count = 0; ///< Distinct matching files in this tag branch.
     };
 
     /** @brief Query tags through SQL joins, without filesystem existence checks. */
