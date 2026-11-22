@@ -38,13 +38,13 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
 .story-photo{position:relative;display:block;border:0;min-width:0;padding:0;background:var(--panel2);cursor:pointer;overflow:hidden;aspect-ratio:1.55;border-radius:3px;color:var(--fg-dim);}
 .story-photo img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .25s;}
 .story-photo:hover img{transform:scale(1.04);}
-.story-photo:focus-visible,.item:focus-visible{outline:2px solid var(--accent2);outline-offset:-3px;}
+.story-photo:focus-visible,.item:focus-visible,.tag-badge:focus-visible{outline:2px solid var(--accent2);outline-offset:-3px;}
 .story-photo .ic{position:absolute;inset:40%;}
 .story-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;color:var(--fg-dim);font-size:12px;}
 .story-foot .btn{font-size:13px;flex-shrink:0;}
 .story-foot>.tag-list{flex:1;min-width:0;}
 .tag-list{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;}
-.tag-badge{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 10px;border-radius:999px;border:1px solid hsl(var(--tag-hue) 48% 66% / .22);background:hsl(var(--tag-hue) 48% 60% / .09);color:hsl(var(--tag-hue) 62% 78%);font-size:11px;font-weight:500;line-height:1.35;overflow-wrap:anywhere;cursor:default;}
+.tag-badge{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 10px;border-radius:999px;border:1px solid hsl(var(--tag-hue) 48% 66% / .22);background:hsl(var(--tag-hue) 48% 60% / .09);color:hsl(var(--tag-hue) 62% 78%);font-family:inherit;font-size:11px;font-weight:500;line-height:1.35;overflow-wrap:anywhere;cursor:pointer;}
 .tag-badge:before{content:'';flex:none;width:5px;height:5px;border-radius:50%;background:hsl(var(--tag-hue) 58% 70%);box-shadow:0 0 6px hsl(var(--tag-hue) 60% 65% / .18);}
 .tag-badge:hover{background:hsl(var(--tag-hue) 48% 60% / .17);border-color:hsl(var(--tag-hue) 48% 66% / .4);}
 .tags-empty{font-size:12px;color:var(--fg-dim);font-style:italic;}
@@ -230,11 +230,13 @@ var storyObserver = new IntersectionObserver(function(entries){
 // Use text nodes so digiKam names remain plain text, including markup characters.
 function tagBadges(tags, label){
   var list = document.createElement('div'); list.className = 'tag-list';
-  list.setAttribute('role','list'); list.setAttribute('aria-label',label);
+  list.setAttribute('role','group'); list.setAttribute('aria-label',label);
   (tags || []).forEach(function(tag){
-    var badge = document.createElement('span'); badge.className = 'tag-badge';
-    badge.setAttribute('role','listitem'); badge.textContent = tag.name;
-    badge.title = tag.path || tag.name; badge.setAttribute('aria-label',badge.title);
+    var badge = document.createElement('button'); badge.type = 'button'; badge.className = 'tag-badge';
+    badge.textContent = tag.name;
+    badge.title = tag.path || tag.name; badge.setAttribute('aria-label','Add tag filter: ' + badge.title);
+    badge.setAttribute('aria-haspopup','dialog'); badge.setAttribute('aria-controls','timelineFilterDialog');
+    badge.onclick = function(){ openTimelineTagFilter(tag.name); };
     var hash = 0;
     for (var i = 0; i < badge.title.length; ++i) hash = (hash * 31 + badge.title.charCodeAt(i)) | 0;
     badge.style.setProperty('--tag-hue', [158,205,260,325,38][(hash >>> 0) % 5]);

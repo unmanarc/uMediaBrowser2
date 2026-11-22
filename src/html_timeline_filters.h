@@ -337,6 +337,15 @@ function openTimelineFilters(){
   loadFilterTags(false);
   loadFilterValues();
 }
+/** @brief Add a selected timeline tag to the top-level AND draft, awaiting Apply. */
+function openTimelineTagFilter(name){
+  openTimelineFilters();
+  if ($$('.filter-rule,.filter-group',$('#filterRules')).length >= 20){
+    $('#filterError').textContent = 'Remove a condition or group to add this tag (maximum 20 items).';
+    return;
+  }
+  addFilterRule({field:'tag',op:'eq',value:name,negate:false},true);
+}
 /** @brief Commit JSON and regenerate the timeline without invalidating other clients. */
 function applyTimelineFilter(filter){
   appliedFilter = filter; filterJSON = filter.rules.length ? JSON.stringify(filter) : '';

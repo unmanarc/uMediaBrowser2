@@ -272,7 +272,82 @@ class TimelineFilterUITests(unittest.TestCase):
                 db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Tag picker')")
             self.server.refresh('timeline_tags_refresh')
 
-    def test_informational_badges_and_carousel_hover_navigation(self):
+    def test_tag_click_adds_and_draft_preserving_groups_until_apply(self):
+        self.open_editor()
+        group = self.add_group()
+        self.add_rule('tag', 'Aaron', group=group)
+        self.add_rule('tag', 'Esther', group=group)
+        self.add_rule('sensitivity', '150', 'gt')
+        self.apply()
+        original_url = self.page.url
+        original_filter = self.page.evaluate('appliedFilter')
+        original_status = self.page.locator('#timelineStatus').inner_text()
+        feed_requests = []
+        self.page.on('request', lambda request: feed_requests.append(request.url)
+                     if urllib.parse.parse_qs(urllib.parse.urlsplit(request.url).query).get('act') == ['timeline'] else None)
+
+        def select_tag():
+            badge = self.page.locator('.story-foot .tag-badge').filter(has_text='Holiday').first
+            badge.focus()
+            badge.press('Enter')
+            self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
+            self.page.wait_for_function('filterTags !== null && !filterTagsRequest && !filterValuesRequest')
+            self.assertEqual(self.page.locator('#filterRules > .filter-group').count(), 1)
+            self.assertEqual(self.page.get_by_label('Group match').input_value(), 'any')
+            rules = self.page.locator('#filterRules > .filter-rule')
+            self.assertEqual(rules.count(), 2)
+            self.assertEqual(rules.last.get_by_label('Field', exact=True).input_value(), 'tag')
+            self.assertEqual(rules.last.get_by_label('Value', exact=True).input_value(), 'Holiday')
+            self.assertEqual(rules.last.get_by_label('Include or exclude condition').input_value(), 'false')
+            self.assertEqual(self.page.url, original_url)
+            self.assertEqual(self.page.evaluate('appliedFilter'), original_filter)
+            self.assertEqual(self.page.locator('#timelineStatus').inner_text(), original_status)
+            self.assertEqual(feed_requests, [])
+
+        select_tag()
+        self.page.locator('#filterCancel').click()
+        self.open_editor()
+        self.assertEqual(self.page.locator('.filter-rule').count(), 3)
+        self.page.keyboard.press('Escape')
+        select_tag()
+        self.apply()
+        applied = self.page.evaluate('appliedFilter')
+        self.assertEqual(applied['rules'][:2], original_filter['rules'])
+        self.assertEqual(applied['rules'][2], dict(field='tag', op='eq', value='Holiday', negate=False))
+        self.assertIn('1 items', self.page.locator('#timelineStatus').inner_text())
+        self.assertEqual(self.page.locator('.story-photo img').get_attribute('alt'), 'b.jpg')
+
+    def test_mobile_event_and_carousel_tags_open_unapplied_drafts(self):
+        self.page.set_viewport_size(dict(width=390, height=844))
+        story = self.page.locator('.story').filter(has=self.page.locator('.tag-badge').filter(has_text='Holiday')).first
+        story.locator('.story-foot a').click()
+        self.page.wait_for_function('eventView && eventView.info')
+        event_url = self.page.url
+        self.page.locator('#eventDetails .tag-badge').filter(has_text='Holiday').first.click()
+        self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
+        self.page.wait_for_function('filterTags !== null && !filterTagsRequest')
+        self.assertEqual(self.page.locator('.filter-tag-select').input_value(), 'Holiday')
+        self.assertEqual(self.page.url, event_url)
+        self.assertEqual(self.page.evaluate('appliedFilter.rules'), [])
+        self.page.locator('#filterCancel').click()
+        self.page.locator('#eventItems .item').first.click()
+        self.page.wait_for_function('albumOpen() && document.querySelector("#albumImg").complete')
+        box = self.page.locator('#albumImg').bounding_box()
+        self.page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
+        self.page.wait_for_function('getComputedStyle(document.querySelector("#albumTags")).opacity === "1"')
+        badge = self.page.locator('#albumTags .tag-badge').first
+        name = badge.inner_text()
+        badge.click()
+        self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
+        self.assertFalse(self.page.evaluate('albumOpen()'))
+        self.assertEqual(self.page.locator('.filter-tag-select').input_value(), name)
+        self.assertEqual(self.page.url, event_url)
+        self.assertEqual(self.page.evaluate('appliedFilter.rules'), [])
+        self.page.keyboard.press('Escape')
+        self.open_editor()
+        self.assertEqual(self.page.locator('.filter-rule').count(), 0)
+
+    def test_tag_badges_and_carousel_hover_navigation(self):
         name = '<tag> & ñ'
         try:
             with timeline.sqlite_connection(self.server.database) as db:
@@ -290,6 +365,7 @@ class TimelineFilterUITests(unittest.TestCase):
             self.assertEqual(badges.all_text_contents(), [name, name])
             self.assertEqual(badges.first.get_attribute('title'), 'Family / '+name)
             self.assertEqual(badges.last.get_attribute('title'), 'Travel / '+name)
+            self.assertEqual(story.locator('button.tag-badge').count(), 2)
             self.assertEqual(story.locator('.tag-badge button, .tag-badge a, .tag-badge img').count(), 0)
             self.page.screenshot(path='/tmp/umedia-story-tags-desktop.png', full_page=True)
             story.locator('.story-foot a').click()
