@@ -24,8 +24,8 @@ bool number(const std::string &text, size_t &out, size_t fallback)
 boost::json::object mediaJSON(const TimelineDatabase::Media &item)
 {
     return {{"path", item.path}, {"folder", item.folder}, {"name", std::filesystem::path(item.path).filename().string()},
-            {"type", "file"}, {"timestamp", item.timestamp}, {"mtime", item.timestamp}, {"size", item.size},
-            {"date_source", "digikam"}, {"index", item.index}};
+            {"type", "file"}, {"timestamp", item.timestamp}, {"mtime", item.mtime}, {"size", item.size},
+            {"date_source", item.dateSource}, {"index", item.index}};
 }
 
 /** @brief Serialize a bounded page or sample list. */
