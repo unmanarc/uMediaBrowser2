@@ -418,8 +418,13 @@ public:
      * Ancestors provide labels only; a parent without assigned files is not an
      * option. Missing dates do not disqualify a file from the tag catalog.
      */
-    std::vector<Tag> readTags(const std::string &memoryURI)
+    std::vector<Tag> readTags(const std::string &memoryURI, const std::vector<std::regex> &exclusions)
     {
+        const auto hidden = [&](const std::string &name) {
+            return std::any_of(exclusions.begin(), exclusions.end(), [&](const std::regex &pattern) {
+                return std::regex_search(name, pattern);
+            });
+        };
         checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
         // digiKam marks technical tags with TagProperties.internalTag. Older
         // databases can also identify them through the reserved internal branch.
@@ -453,13 +458,14 @@ public:
         while (query->step())
         {
             Tag tag{id.getValue(), parent.getValue(), name.getValue(), name.getValue(), static_cast<size_t>(count.getValue())};
+            if (hidden(tag.name)) continue;
             bool internal = internalTags.count(tag.id) || tag.name == "_Digikam_Internal_Tags_" || tag.name == "_Digikam_root_tag_";
             std::unordered_set<int64_t> seen{tag.id};
             auto ancestor = hierarchy.find(tag.parent);
             while (ancestor != hierarchy.end() && ancestor->first != 0 && seen.insert(ancestor->first).second)
             {
                 internal = internal || internalTags.count(ancestor->first) || ancestor->second.name == "_Digikam_Internal_Tags_";
-                if (!ancestor->second.name.empty() && ancestor->second.name != "_Digikam_root_tag_")
+                if (!ancestor->second.name.empty() && ancestor->second.name != "_Digikam_root_tag_" && !hidden(ancestor->second.name))
                     tag.path = ancestor->second.name + " / " + tag.path;
                 ancestor = hierarchy.find(ancestor->second.parent);
             }
@@ -645,9 +651,11 @@ private:
     std::unordered_map<std::string, bool> directories; ///< Request-local directory validation results.
 };
 
-TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds, Mantids30::Runtime::Logs::AppLog *logger)
+TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds, Mantids30::Runtime::Logs::AppLog *logger,
+                                   std::vector<std::regex> tagExclusions)
     : root(fs::canonical(root).string()), gap(std::max<int64_t>(1, gapSeconds)),
-      generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())), logger(logger)
+      generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())), logger(logger),
+      tagExclusions(std::move(tagExclusions))
 {
     rescanTagFiles();
 }
@@ -703,7 +711,7 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
         snapshot = fileSnapshot;
     }
     Reader reader(root, generation.load(), {});
-    auto result = reader.readTags(snapshot->uri);
+    auto result = reader.readTags(snapshot->uri, tagExclusions);
     reader.verify();
     return result;
 }

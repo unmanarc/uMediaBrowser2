@@ -711,6 +711,57 @@ class TimelineTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'Invalid --timeline-gap-minutes', result.stdout+result.stderr)
 
+    def test_command_line_tag_exclusions_only_change_picker(self):
+        rules = Path(self.temp.name)/'excluded-tags.txt'
+        rules.write_bytes(b"# Picker visibility only\r\n\r\n  # Comment\r\n^Aaron$\r\n^O'Brien\r\n")
+        with self.filter_library():
+            with sqlite_connection(self.database) as db:
+                db.execute('UPDATE Tags SET pid=9104 WHERE id=9101')
+            baseline = self.api(act='timeline')['total_items']
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+            url = f'http://127.0.0.1:{port}/?'
+            cookies = http.cookiejar.CookieJar()
+            client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
+            args = [str(BINARY), '--rootdir', str(self.root), '-a', '127.0.0.1', '-l', str(port), '--tag-exclude-file', str(rules)]
+            process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, TZ='UTC'))
+            def api(**params):
+                with client.open(url+urllib.parse.urlencode(params), timeout=10) as response:
+                    return json.load(response)['data']
+            try:
+                for _ in range(200):
+                    if process.poll() is not None: self.fail('Server with tag exclusions failed to start')
+                    try:
+                        catalog = api(act='timeline_tags')['tags']; break
+                    except OSError: time.sleep(.025)
+                else: self.fail('Server with tag exclusions did not start')
+                self.assertEqual({tag['name'] for tag in catalog}, {'Holiday', 'Esther'})
+                self.assertTrue(all(tag['path'] == tag['name'] for tag in catalog))
+                self.assertEqual(api(act='timeline')['total_items'], baseline)
+                # Hidden parents keep their child tags and all tagged files navigable.
+                query = self.filter_json(dict(field='tag',op='eq',value='Aaron'))
+                feed = api(act='timeline', filter=query)
+                self.assertEqual(feed['total_items'], 2)
+                items = [item for event in feed['events']
+                         for item in api(act='timeline_event', event=event['id'], filter=query)['items']]
+                self.assertEqual({item['name'] for item in items}, {'IMG_20300101-100000-a.jpg', 'b.jpg'})
+                self.assertEqual(len(api(act='ls', path='/Filters')['items']), 5)
+                token = next(cookie.value for cookie in cookies if cookie.name == 'CSRFToken')
+                request = urllib.request.Request(url+'act=timeline_tags_refresh', method='POST', headers={'X-CSRFToken':token})
+                with client.open(request, timeout=10) as response:
+                    self.assertEqual(json.load(response)['data']['tags'], catalog)
+            finally:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait()
+        for invalid in (rules.with_name('missing-exclusions.txt'), rules):
+            rules.write_text('# Comment\n[invalid\n')
+            result = subprocess.run([str(BINARY), '--tag-exclude-file', str(invalid)],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'--tag-exclude-file', result.stdout+result.stderr)
+            if invalid == rules: self.assertIn((str(rules)+':2').encode(), result.stdout+result.stderr)
+
     def test_validation_and_stale_cursors(self):
         for params in [dict(act='timeline',cursor='-1'), dict(act='timeline',limit='no'),dict(act='timeline',cursor=1),dict(act='timeline_event',event='../../')]:
             with self.assertRaises(urllib.error.HTTPError) as error: self.api(**params)

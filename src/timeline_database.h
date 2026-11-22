@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -122,10 +123,12 @@ public:
      * @param root Existing directory passed via --rootdir; canonicalized once.
      * @param gapSeconds Inactivity threshold starting a new event (default: 30 minutes).
      * @param logger Optional application logger; must outlive this instance.
+     * @param tagExclusions Compiled expressions hiding tag names from the picker only.
      * @throws std::filesystem::filesystem_error If root cannot be resolved.
      */
     explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60,
-                              Mantids30::Runtime::Logs::AppLog *logger = nullptr);
+                              Mantids30::Runtime::Logs::AppLog *logger = nullptr,
+                              std::vector<std::regex> tagExclusions = {});
 
     /** @brief Read a feed page using a request-local database transaction.
      * @param cursor Number of events to skip.
@@ -171,4 +174,5 @@ private:
     std::mutex scanMutex; ///< Serializes manual rescans.
     std::shared_ptr<FileSnapshot> fileSnapshot; ///< Immutable existing-path table.
     Mantids30::Runtime::Logs::AppLog *logger; ///< Application-owned scan logger.
+    const std::vector<std::regex> tagExclusions; ///< Picker visibility only; never media filtering.
 };

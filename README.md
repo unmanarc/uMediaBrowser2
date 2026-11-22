@@ -172,6 +172,25 @@ snapshot until the replacement is ready; a failed scan preserves it. The ordinar
 timeline refresh keeps its existing behavior and does not rescan the tag snapshot.
 Saved conditions referring to a removed tag remain visible as disabled options.
 
+Use `--tag-exclude-file /path/to/hidden-tags.txt` to hide additional tags from the
+picker. Each nonblank line is a case-sensitive ECMAScript regular expression
+searched against the **tag name**, independently of its hierarchy. Use `^` and `$`
+to match a complete name. Lines whose first non-space character is `#` are comments;
+other whitespace in expressions is preserved. For example:
+
+```text
+# Hide these names everywhere in the tag tree
+^Private$
+^Workflow:
+```
+
+Only matching tags are hidden. Their children remain selectable and are displayed
+without the hidden ancestor in their path. All media remain accessible through
+the timeline, event galleries and folders; these rules do not filter media or
+disable existing JSON tag conditions. Expressions are loaded and compiled once
+at startup; restart the server to reload changes. An unreadable file or invalid
+expression prevents startup, with the file and line reported for invalid patterns.
+
 Filtering runs entirely in SQL, before event grouping, totals, sampling and
 pagination. The same filter follows event galleries and carousel navigation.
 Removing intervening pictures can split an event according to the usual gap.

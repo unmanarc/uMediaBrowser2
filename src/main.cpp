@@ -68,6 +68,7 @@ public:
         globalArguments->addCommandLineOption("HTTP Options", 0, "use-x-real-ip", "Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy)", "false", Abstract::Var::Type::BOOL);
 
         globalArguments->addCommandLineOption("Timeline Options", 0, "timeline-gap-minutes", "Inactivity in minutes that starts a new timeline group (positive integer)", "30", Abstract::Var::Type::STRING);
+        globalArguments->addCommandLineOption("Timeline Options", 0, "tag-exclude-file", "Hide tag names from the picker using one case-sensitive ECMAScript regex per line", "", Abstract::Var::Type::STRING);
 
         globalArguments->addCommandLineOption("HTTP Security", 'p', "passfile", "HTTP User/Pass File", "", Abstract::Var::Type::STRING);
 
@@ -161,6 +162,38 @@ public:
         }
         timelineGapSeconds = gapMinutes * 60;
 
+        const auto excludeFile = globalArguments->getCommandLineOptionValue("tag-exclude-file")->toString();
+        if (!excludeFile.empty())
+        {
+            std::ifstream input(excludeFile);
+            if (!input)
+            {
+                log->log0(__func__, Logs::CRITICAL, "Cannot read --tag-exclude-file: %s", excludeFile.c_str());
+                return false;
+            }
+            std::string line;
+            size_t lineNumber = 0;
+            while (std::getline(input, line))
+            {
+                ++lineNumber;
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                const auto first = line.find_first_not_of(" \t\r\n");
+                if (first == std::string::npos || line[first] == '#') continue;
+                try { tagExclusions.emplace_back(line, std::regex::ECMAScript | std::regex::optimize); }
+                catch (const std::regex_error &error)
+                {
+                    log->log0(__func__, Logs::CRITICAL, "Invalid --tag-exclude-file regex at %s:%zu: %s", excludeFile.c_str(), lineNumber, error.what());
+                    return false;
+                }
+            }
+            if (!input.eof())
+            {
+                log->log0(__func__, Logs::CRITICAL, "Cannot read --tag-exclude-file: %s", excludeFile.c_str());
+                return false;
+            }
+            log->log0(__func__, Logs::INFO, "Loaded %zu tag exclusion rules from %s", tagExclusions.size(), excludeFile.c_str());
+        }
+
         bool configUseIPv4 = globalArguments->getCommandLineOptionBooleanValue("ipv4");
         auto configThreads = static_cast<uint32_t>(std::stoul(globalArguments->getCommandLineOptionValue("threads")->toString()));
 
@@ -247,7 +280,7 @@ public:
         }
         webClientParameters.httpDocumentRootDir = rp.string();
         // Scan existing paths once for the tag picker; digiKam queries remain request-local.
-        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds, log);
+        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds, log, std::move(tagExclusions));
         log->log0(__func__, Logs::INFO, "Timeline uses read-only digiKam queries; tag selector file snapshot loaded.");
         multiThreadedAcceptor->startInBackground();
 
@@ -285,6 +318,7 @@ private:
     std::string listenAddress;
     uint16_t listenPort;
     int64_t timelineGapSeconds = 30 * 60; ///< CLI-configured inactivity threshold in seconds.
+    std::vector<std::regex> tagExclusions; ///< Compiled once during configuration.
     Logs::AppLog *log;
     webClientParams webClientParameters;
 
