@@ -20,7 +20,10 @@
  * Existing-file counts and six-hour event boundaries require streaming the
  * matching rows and checking their files. This uses bounded application memory,
  * rather than copying all Images records into a searchable container. SQLite
- * may use its own temporary storage to execute ORDER BY.
+ * may use its own temporary storage to execute ORDER BY. Dates use a valid IMG
+ * filename first, ImageInformation.creationDate second, and finally
+ * Images.modificationDate. The original modification time and selected source
+ * are exposed separately in Media.
  *
  * @note Instances can be shared by HTTP workers: connections and query state
  *       belong to individual requests. Only the revision counter is shared.
@@ -45,7 +48,9 @@ public:
     {
         std::string path;   ///< URI-style path, beginning with '/'.
         std::string folder; ///< Parent URI-style path; '/' denotes rootdir.
-        int64_t timestamp = 0; ///< Images.modificationDate as Unix seconds.
+        int64_t timestamp = 0; ///< First valid date: IMG filename, creationDate, modificationDate.
+        int64_t mtime = 0; ///< Original Images.modificationDate as Unix seconds; 0 if invalid.
+        std::string dateSource; ///< "filename", "creationDate" or "modificationDate".
         uintmax_t size = 0;    ///< Images.fileSize; no filesystem metadata extraction.
         size_t index = 0;      ///< Position in the event's folder/time ordering.
     };
@@ -54,8 +59,8 @@ public:
     struct Event
     {
         std::string id; ///< Opaque revision and time bounds, usable for direct range queries.
-        int64_t start = 0; ///< Oldest modification time, inclusive.
-        int64_t end = 0;   ///< Newest modification time, inclusive.
+        int64_t start = 0; ///< Oldest selected capture time, inclusive.
+        int64_t end = 0;   ///< Newest selected capture time, inclusive.
         size_t count = 0;  ///< Number of currently existing files in the event.
         std::vector<Media> samples; ///< Up to six random members with their gallery positions.
     };
