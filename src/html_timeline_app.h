@@ -1,9 +1,15 @@
 #pragma once
+/** @file html_timeline_app.h
+ *  @brief Independent timeline page, server-filtered feed and event navigation.
+ */
 #include "html_shared.h"
+#include "html_timeline_filters.h"
+#include "timeline_filter.h"
 
+/** @brief Build the independent timeline page and its server-defined filter editor. */
 inline std::string buildHTMLTimelineApp(const std::string &appTitle)
 {
-    return buildHTMLPage(R"uTIMELINE(<!DOCTYPE html>
+    std::string html = R"uTIMELINE(<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -11,6 +17,7 @@ inline std::string buildHTMLTimelineApp(const std::string &appTitle)
 <title>Timeline · __APP_TITLE__</title>
 <style>
 __SHARED_CSS__
+__TIMELINE_FILTER_CSS__
 #timelineApp{height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr auto;}
 a{color:var(--accent2);text-decoration:none;}
 a:hover{text-decoration:underline;}
@@ -96,6 +103,7 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
    <a class="btn" href="?" id="folderMode"><i class="ic ic-folder"></i> Folders</a>
    <a class="btn current" href="?view=timeline" aria-current="page">Timeline</a>
   </nav>
+  <button class="btn" id="btnTimelineFilter" title="Filter timeline" aria-label="Timeline filters" aria-haspopup="dialog" aria-controls="timelineFilterDialog" aria-pressed="false"><i class="ic ic-filter"></i><span id="filterBadge" hidden></span></button>
   <button class="btn icon" id="btnRefreshTimeline" title="Refresh timeline" aria-label="Refresh timeline"><i class="ic ic-refresh"></i></button>
  </header>
  <main id="timelineMain">
@@ -103,6 +111,7 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
    <div id="pageMessage" role="status"></div>
    <section id="feedView">
     <div class="timeline-intro"><span class="eyebrow">Your library, in moments</span><h1>Timeline</h1><p class="subtle">A story in every day. Rediscover your pictures and videos, together.</p></div>
+    <button class="btn" id="filterSummary" hidden></button>
     <div id="stories"></div>
    </section>
    <section id="eventView" hidden>
@@ -122,6 +131,7 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
  <footer id="timelineStatus" role="status">Loading your moments…</footer>
 </div>
 __SHARED_ALBUM_HTML__
+__TIMELINE_FILTER_HTML__
 <div id="toast" role="status"></div>
 <script>
 'use strict';
@@ -130,6 +140,7 @@ __SHARED_API_JS__
 __SHARED_THUMB_STATE_JS__
 __SHARED_ALBUM_JS__
 __SHARED_THUMB_JS__
+__TIMELINE_FILTER_JS__
 
 var main = $('#timelineMain');
 var feed = newFeed();
@@ -163,7 +174,7 @@ function dateRange(event){
   var time = {hour:'2-digit',minute:'2-digit'};
   return day + (event.start === event.end ? '' : ' · ' + start.toLocaleTimeString([],time) + ' → ' + end.toLocaleTimeString([],time));
 }
-function eventURL(id){ return '?act=timeline_event&event=' + enc(id); }
+function eventURL(id){ return filteredURL('?act=timeline_event&event=' + enc(id)); }
 function updateMore(){
   var view = active(), button = $('#btnMore');
   if (!view) return;
@@ -248,12 +259,13 @@ async function loadFeed(refresh){
   view.busy = true; view.error = ''; updateMore();
   try {
     var url = refresh ? '?act=timeline_refresh' : '?act=timeline&cursor=' + view.cursor + (view.revision ? '&revision=' + enc(view.revision) : '');
-    var page = await data(url,refresh ? {method:'POST'} : undefined);
+    var page = await data(filteredURL(url),refresh ? {method:'POST'} : undefined);
     if (view !== feed) return;
+    appliedFilter = page.filter; updateFilterIndicator();
     view.revision = page.revision; view.cursor = page.next; view.more = page.has_more; view.loaded = true;
     page.events.forEach(appendStory);
     view.status = page.total_events.toLocaleString() + ' events · ' + page.total_items.toLocaleString() + ' items · Newest first';
-    view.note = !page.total_items ? 'No pictures or videos in this library yet.' : '';
+    view.note = !page.total_items ? (filterJSON ? 'No pictures or videos match these filters. Edit the conditions or reset all filters to see your library.' : 'No pictures or videos in this library yet.') : '';
     if (page.error) view.note = page.error;
     if (page.skipped) view.note += (view.note ? '\n' : '') + 'Some database entries were skipped because their files are missing or unavailable.';
     if (mode === 'feed'){ $('#timelineStatus').textContent = view.status; message(view.note); }
@@ -307,6 +319,7 @@ async function loadEvent(){
   try {
     var page = await data(eventURL(view.id) + '&cursor=' + view.cursor);
     if (view !== eventView) return;
+    appliedFilter = page.filter; updateFilterIndicator();
     view.info = page; view.cursor = page.next; view.more = page.has_more;
     view.items = view.items.concat(page.items);
     appendEventItems(page.items); describeEvent(page);
@@ -341,8 +354,8 @@ function route(){
   }
   updateMore();
 }
-function refreshTimeline(){
-  if (feed.busy) return;
+/** @brief Recreate feed state; filter edits use GET and never invalidate other clients. */
+function refreshTimeline(invalidate){
   closeAlbum(); albumProvider = null;
   storyObserver.disconnect(); visibleStories.clear(); clearThumbs($('#stories'));
   thumbCache = {}; albumExifCache = {};
@@ -350,8 +363,8 @@ function refreshTimeline(){
   mode = 'feed'; eventView = null;
   clearThumbs($('#eventItems'));
   $('#feedView').hidden = false; $('#eventView').hidden = true;
-  history.replaceState(null,'',location.pathname + '?view=timeline');
-  main.scrollTop = 0; message(''); loadFeed(true);
+  history.replaceState(null,'',location.pathname + '?view=timeline' + (filterJSON ? '&filter=' + enc(filterJSON) : ''));
+  main.scrollTop = 0; message(''); loadFeed(invalidate !== false);
 }
 function loadMore(){
   var view = active();
@@ -361,7 +374,7 @@ function loadMore(){
   else loadEvent();
 }
 $('#btnMore').onclick = loadMore;
-$('#btnRefreshTimeline').onclick = refreshTimeline;
+$('#btnRefreshTimeline').onclick = function(){ refreshTimeline(); };
 function setEventList(list){
   $('#eventItems').classList.toggle('event-list',list);
   $('#eventGrid').setAttribute('aria-pressed',String(!list));
@@ -385,13 +398,13 @@ new IntersectionObserver(function(entries){
 }, {root:main,rootMargin:'300px'}).observe($('#moreArea'));
 // Rotate a single visible story per tick, pausing while browsing an event/media.
 setInterval(async function(){
-  if (document.hidden || mode !== 'feed' || albumOpen() || rotating || feed.stale) return;
+  if (document.hidden || mode !== 'feed' || albumOpen() || filterDialog.open || rotating || feed.stale) return;
   var cards = Array.from(visibleStories).filter(function(card){ return card.isConnected && card._event.count > 6; });
   if (!cards.length) return;
   var card = cards[Math.floor(Math.random()*cards.length)], view = feed;
   rotating = true;
   try {
-    var page = await data('?act=timeline_samples&event=' + enc(card._event.id));
+    var page = await data(filteredURL('?act=timeline_samples&event=' + enc(card._event.id)));
     if (view === feed && mode === 'feed' && card.isConnected && !albumOpen()) storyPhotos(card,card._event,page.samples);
   } catch(error){
     if (error.stale && view === feed){ feed.stale = true; message(error.message); updateMore(); }
@@ -400,5 +413,10 @@ setInterval(async function(){
 bindAlbum(); route();
 </script>
 </body>
-</html>)uTIMELINE", appTitle);
+</html>)uTIMELINE";
+    boost::replace_all(html, "__TIMELINE_FILTER_CSS__", HTMLTimelineFilters::CSS);
+    boost::replace_all(html, "__TIMELINE_FILTER_HTML__", HTMLTimelineFilters::HTML);
+    boost::replace_all(html, "__TIMELINE_FILTER_JS__", HTMLTimelineFilters::JS);
+    boost::replace_all(html, "__TIMELINE_FILTER_FIELDS__", boost::json::serialize(TimelineFilter::fields()));
+    return buildHTMLPage(std::move(html), appTitle);
 }
