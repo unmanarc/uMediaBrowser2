@@ -59,8 +59,8 @@ class TimelineTests(unittest.TestCase):
         cls.base = Path(cls.temp.name) / 'base.jpg'
         subprocess.run(['convert', '-size', '96x64', 'gradient:#3b82f6-#f6c945', str(cls.base)], check=True)
         cls.photo('A beach/same.jpg', 1_700_000_000)
-        cls.photo('B meal/same.jpg', 1_700_000_000 + 6*3600)  # inclusive gap boundary
-        cls.photo('B meal/older.jpg', 1_700_000_000 - 6*3600 - 1)  # new event
+        cls.photo('B meal/same.jpg', 1_700_000_000 + 30*60 - 1)  # just below the inactivity threshold
+        cls.photo('B meal/older.jpg', 1_700_000_000 - 30*60)  # exactly the threshold starts a new event
         for n in range(65):
             cls.photo(f'Large/{n:03}.jpg', 1_800_000_000)
         cls.photo('Other/duplicate.jpg', 1_800_000_000)
@@ -175,6 +175,7 @@ class TimelineTests(unittest.TestCase):
         self.assertNotIn('/outside.jpg', paths)
         self.assertTrue(page['database_available'])
         self.assertEqual(page['error'], '')
+        self.assertEqual(page['gap_seconds'], 1800)
         big = next(e for e in events if e['count'] == 66)
         first = self.api(act='timeline_event', event=big['id'])
         self.assertEqual(len(first['items']), 60)
@@ -189,7 +190,7 @@ class TimelineTests(unittest.TestCase):
         draws = [self.api(act='timeline_samples', event=big['id'])['samples'] for _ in range(3)]
         self.assertTrue(all(len(draw) == 6 for draw in draws))
         self.assertNotEqual(draws[0], draws[1])
-        across = next(e for e in events if e['count'] == 2 and e['end'] == 1_700_000_000 + 6*3600)
+        across = next(e for e in events if e['count'] == 2 and e['end'] == 1_700_000_000 + 30*60 - 1)
         self.assertEqual(across['start'], 1_700_000_000)
         files = self.api(act='timeline_event', event=across['id'])['items']
         self.assertEqual([i['folder'] for i in files], ['/A beach', '/B meal'])
@@ -406,6 +407,49 @@ class TimelineTests(unittest.TestCase):
             saved.rename(self.database)
             self.assertEqual(self.database.read_bytes(), original)
             self.refresh()
+
+    def test_command_line_group_threshold(self):
+        root = self.library/'Threshold'
+        root.mkdir()
+        with sqlite_connection(self.database) as db:
+            db.execute("INSERT INTO Albums(albumRoot,relativePath) VALUES(1,'/Threshold')")
+            album = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            for index, seconds in enumerate((0, 1799, 3599)):
+                name = f'{index}.jpg'
+                shutil.copyfile(self.base, root/name)
+                date = datetime.datetime.fromtimestamp(1_700_000_000+seconds, datetime.timezone.utc).isoformat()
+                db.execute('INSERT INTO Images(album,name,modificationDate,fileSize) VALUES(?,?,?,?)',
+                           (album, name, date, 123))
+        # The gap is measured between adjacent images, not from the group's start.
+        for minutes, expected in [(None, 2), ('10', 3), ('60', 1)]:
+            with self.subTest(minutes=minutes), socket.socket() as sock:
+                sock.bind(('127.0.0.1', 0))
+                port = sock.getsockname()[1]
+            args = [str(BINARY), '--rootdir', str(root), '-a', '127.0.0.1', '-l', str(port)]
+            if minutes is not None: args += ['--timeline-gap-minutes', minutes]
+            process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       env=dict(os.environ, TZ='UTC'))
+            try:
+                for _ in range(200):
+                    if process.poll() is not None: self.fail('Configured server failed to start')
+                    try:
+                        with urllib.request.urlopen(f'http://127.0.0.1:{port}/?act=timeline', timeout=2) as response:
+                            page = json.load(response)['data']
+                        break
+                    except OSError: time.sleep(.025)
+                else: self.fail('Configured server did not start')
+                self.assertEqual(page['total_items'], 3)
+                self.assertEqual(page['total_events'], expected)
+                self.assertEqual(page['gap_seconds'], int(minutes or '30')*60)
+            finally:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait()
+        for invalid in ('0', '-1', '1.5', 'abc', '99999999999999999999999'):
+            result = subprocess.run([str(BINARY), '--timeline-gap-minutes', invalid],
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b'Invalid --timeline-gap-minutes', result.stdout+result.stderr)
 
     def test_validation_and_stale_cursors(self):
         for params in [dict(act='timeline',cursor='-1'), dict(act='timeline',limit='no'),dict(act='timeline',cursor=1),dict(act='timeline_event',event='../../')]:

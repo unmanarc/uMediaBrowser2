@@ -302,7 +302,7 @@ public:
     /** @brief Stream time-ordered records, retaining only the requested event page.
      * @param cursor Number of complete events to skip.
      * @param limit Maximum event summaries to retain.
-     * @param gap Maximum adjacent timestamp difference within one event.
+     * @param gap Inactivity threshold starting a new event; equality starts a new group.
      * @return Requested page with exact existing-file and event totals.
      */
     FeedPage readFeed(size_t cursor, size_t limit, int64_t gap)
@@ -321,7 +321,7 @@ public:
             current = Event{};
         };
         walk(nullptr, false, [&](Media item) {
-            if (!current.count || previous - item.timestamp > gap)
+            if (!current.count || previous - item.timestamp >= gap)
             {
                 finish();
                 ++page.totalEvents;

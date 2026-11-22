@@ -99,11 +99,19 @@ ranges. Rows are consumed one at a time; only the requested page and up to six
 samples per displayed event are retained. There is no application media index,
 snapshot cache or startup scan. SQLite may use temporary storage for sorting.
 
-Exact existing-file totals and six-hour event boundaries require streaming the
+Exact existing-file totals and configured event boundaries require streaming the
 matching ordered rows and checking file existence. Missing files, symlinks and
 entries without valid dates are skipped before counting or pagination. Adjacent
-selected capture dates belong to the same event when the gap is at most **6 hours**,
-regardless of their folders. If the database is missing or cannot be read, the
+selected capture dates belong to the same event while the pause between adjacent
+images is **less than 30 minutes** by default, regardless of their folders.
+A pause of exactly 30 minutes or longer starts a new group. Configure this
+threshold with a positive integer number of minutes:
+
+```bash
+./build/timeline/uMediaBrowser2 --rootdir /home/user/Pictures/Albums/Familiar --timeline-gap-minutes 30
+```
+
+The gap is measured from the previous image, not from the start of the group. If the database is missing or cannot be read, the
 timeline shows an error and the folder browser continues to work as usual.
 
 The feed initially requests 8 events. Each story shows at most 6 random thumbnails;

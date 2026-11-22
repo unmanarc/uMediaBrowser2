@@ -17,7 +17,7 @@
  * the application retains only the requested page and at most six samples per
  * returned event. There is no startup scan, media index or snapshot cache.
  *
- * Existing-file counts and six-hour event boundaries require streaming the
+ * Existing-file counts and configured event boundaries require streaming the
  * matching rows and checking their files. This uses bounded application memory,
  * rather than copying all Images records into a searchable container. SQLite
  * may use its own temporary storage to execute ORDER BY. Dates use a valid IMG
@@ -55,7 +55,7 @@ public:
         size_t index = 0;      ///< Position in the event's folder/time ordering.
     };
 
-    /** @brief A contiguous run of existing files separated by at most gapSeconds(). */
+    /** @brief A contiguous run of existing files separated by less than gapSeconds(). */
     struct Event
     {
         std::string id; ///< Opaque revision and time bounds, usable for direct range queries.
@@ -90,10 +90,10 @@ public:
 
     /** @brief Configure database access without reading or indexing any media.
      * @param root Existing directory passed via --rootdir; canonicalized once.
-     * @param gapSeconds Maximum gap between adjacent files in one event.
+     * @param gapSeconds Inactivity threshold starting a new event (default: 30 minutes).
      * @throws std::filesystem::filesystem_error If root cannot be resolved.
      */
-    explicit TimelineDatabase(std::string root, int64_t gapSeconds = 6 * 3600);
+    explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60);
 
     /** @brief Read a feed page using a request-local database transaction.
      * @param cursor Number of events to skip.
@@ -123,7 +123,7 @@ public:
     /** @brief Invalidate client cursors after refresh/upload/delete; reads no files. */
     void invalidate() { generation.fetch_add(1); }
 
-    /** @return Configured maximum gap between adjacent files in an event. */
+    /** @return Configured inactivity threshold for starting a new event. */
     int64_t gapSeconds() const { return gap; }
 
 private:

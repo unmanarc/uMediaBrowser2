@@ -8,6 +8,8 @@
 #include <Mantids30/Core/Memory/a_uint16.h>
 #include <Mantids30/Network/Sockets/acceptor_multithreaded.h>
 
+#include <charconv>
+#include <limits>
 #include <filesystem>
 #include <fstream>
 #include <inttypes.h>
@@ -63,6 +65,8 @@ public:
         globalArguments->addCommandLineOption("HTTP Options", 0, "title", "Application title shown in browser tab and toolbar", "", Abstract::Var::Type::STRING);
         globalArguments->addCommandLineOption("HTTP Options", 't', "threads", "Max Concurrent Connections (Threads)", "1024", Abstract::Var::Type::UINT16);
         globalArguments->addCommandLineOption("HTTP Options", 0, "use-x-real-ip", "Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy)", "false", Abstract::Var::Type::BOOL);
+
+        globalArguments->addCommandLineOption("Timeline Options", 0, "timeline-gap-minutes", "Inactivity in minutes that starts a new timeline group (positive integer)", "30", Abstract::Var::Type::STRING);
 
         globalArguments->addCommandLineOption("HTTP Security", 'p', "passfile", "HTTP User/Pass File", "", Abstract::Var::Type::STRING);
 
@@ -139,6 +143,19 @@ public:
         webClientParameters.debug = globalArguments->getCommandLineOptionBooleanValue("debug");
         webClientParameters.useXRealIP = globalArguments->getCommandLineOptionBooleanValue("use-x-real-ip");
         webClientParameters.appTitle = globalArguments->getCommandLineOptionValue("title")->toString();
+
+        // Parse explicitly so zero, negatives, trailing text and overflow fail
+        // before opening the listener. Conversion to seconds must also be safe.
+        const auto gapText = globalArguments->getCommandLineOptionValue("timeline-gap-minutes")->toString();
+        int64_t gapMinutes = 0;
+        const auto parsedGap = std::from_chars(gapText.data(), gapText.data() + gapText.size(), gapMinutes);
+        if (parsedGap.ec != std::errc{} || parsedGap.ptr != gapText.data() + gapText.size() ||
+            gapMinutes <= 0 || gapMinutes > std::numeric_limits<int64_t>::max() / 60)
+        {
+            log->log0(__func__, Logs::CRITICAL, "Invalid --timeline-gap-minutes: expected a positive integer number of minutes.");
+            return false;
+        }
+        timelineGapSeconds = gapMinutes * 60;
 
         bool configUseIPv4 = globalArguments->getCommandLineOptionBooleanValue("ipv4");
         auto configThreads = static_cast<uint32_t>(std::stoul(globalArguments->getCommandLineOptionValue("threads")->toString()));
@@ -226,7 +243,7 @@ public:
         }
         webClientParameters.httpDocumentRootDir = rp.string();
         // Discovery and read-only queries are deferred to individual timeline requests.
-        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string());
+        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds);
         log->log0(__func__, Logs::INFO, "Timeline uses direct read-only digiKam queries (no startup index).");
         multiThreadedAcceptor->startInBackground();
 
@@ -261,6 +278,7 @@ private:
 
     std::string listenAddress;
     uint16_t listenPort;
+    int64_t timelineGapSeconds = 30 * 60; ///< CLI-configured inactivity threshold in seconds.
     Logs::AppLog *log;
     webClientParams webClientParameters;
 
