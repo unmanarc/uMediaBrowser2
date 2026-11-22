@@ -184,8 +184,8 @@ other whitespace in expressions is preserved. For example:
 ^Workflow:
 ```
 
-Only matching tags are hidden. Their children remain selectable and are displayed
-without the hidden ancestor in their path. All media remain accessible through
+Matching tags and all their descendants are hidden from the picker. A tag with
+the same name in another, unexcluded branch remains selectable. All media remain accessible through
 the timeline, event galleries and folders; these rules do not filter media or
 disable existing JSON tag conditions. Expressions are loaded and compiled once
 at startup; restart the server to reload changes. An unreadable file or invalid
