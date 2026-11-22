@@ -22,6 +22,7 @@ class TimelineFilterUITests(unittest.TestCase):
         cls.fixture = cls.server().filter_library()
         cls.fixture.__enter__()
         cls.addClassCleanup(cls.fixture.__exit__, None, None, None)
+        cls.server.refresh('timeline_tags_refresh')
         cls.playwright = sync_playwright().start()
         cls.addClassCleanup(cls.playwright.stop)
         cls.browser = cls.playwright.chromium.launch(
@@ -45,6 +46,7 @@ class TimelineFilterUITests(unittest.TestCase):
     def open_editor(self):
         self.page.locator('#btnTimelineFilter').click()
         self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
+        self.page.wait_for_function('filterTags !== null && !filterTagsRequest')
 
     def add_rule(self, field, value, op=None, negate=False, group=None):
         if group is None: self.page.locator('#filterAdd').click()
@@ -52,7 +54,8 @@ class TimelineFilterUITests(unittest.TestCase):
         row = self.page.locator('.filter-rule').last if group is None else group.locator(':scope > .filter-group-rules > .filter-rule').last
         row.get_by_label('Field', exact=True).select_option(field)
         if op: row.get_by_label('Comparison', exact=True).select_option(op)
-        row.get_by_label('Value', exact=True).fill(value)
+        if field == 'tag': row.get_by_label('Value', exact=True).select_option(value)
+        else: row.get_by_label('Value', exact=True).fill(value)
         if negate: row.get_by_label('Include or exclude condition').select_option('true')
         return row
 
@@ -129,14 +132,59 @@ class TimelineFilterUITests(unittest.TestCase):
         row.get_by_role('button', name='Remove condition').click()
         while self.page.locator('.filter-rule').count():
             self.page.locator('.filter-rule').first.get_by_role('button', name='Remove condition').click()
-        self.add_rule('tag', '<script>does not exist</script>')
-        self.apply()
+        # Old URLs may refer to a removed tag; retain it as disabled context.
+        query = self.server.filter_json(dict(field='tag',op='eq',value='<script>does not exist</script>'))
+        self.page.goto(self.server.url+'?'+urllib.parse.urlencode(dict(view='timeline',filter=query)))
+        self.page.wait_for_function('feed.loaded')
         self.assertIn('No pictures or videos match these filters', self.page.locator('#pageMessage').inner_text())
         self.assertEqual(self.page.locator('.story').count(), 0)
         self.page.reload()
         self.page.wait_for_function('feed.loaded')
         self.open_editor()
-        self.assertEqual(self.page.locator('.filter-rule input').input_value(), '<script>does not exist</script>')
+        self.assertEqual(self.page.locator('.filter-tag-select').input_value(), '<script>does not exist</script>')
+        self.assertTrue(self.page.locator('.filter-tag-select option:checked').is_disabled())
+
+    def test_tag_list_manual_rescan_and_failure_retry(self):
+        self.open_editor()
+        row = self.add_rule('tag', 'Holiday')
+        self.assertEqual(row.locator('input').count(), 0)
+        self.assertIn("O'Brien %_ ñ", row.locator('.filter-tag-select').inner_text())
+        path = self.server.photo('Tag picker/new.jpg', 1_800_000_000)
+        name = '<tag> & new ñ'
+        try:
+            with timeline.sqlite_connection(self.server.database) as db:
+                db.execute('INSERT INTO Tags(id,pid,name) VALUES(9300,0,?)', (name,))
+                db.execute("INSERT INTO ImageTags(imageid,tagid) SELECT i.id,9300 FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Tag picker'")
+            # Closing/reopening loads the SQL tag list without scanning disk.
+            self.page.locator('#filterCancel').click()
+            self.open_editor()
+            row = self.add_rule('tag', 'Holiday')
+            self.assertNotIn(name, row.locator('.filter-tag-select').inner_text())
+            self.page.route('**/*act=timeline_tags_refresh', lambda route: route.fulfill(
+                status=503, content_type='application/json', body=json.dumps(dict(ok=False,error='Scan failed'))))
+            row.get_by_role('button', name='Rescan gallery for tags').click()
+            self.page.wait_for_function('!filterTagsRequest')
+            self.assertIn('Scan failed', self.page.locator('#filterTagStatus').inner_text())
+            self.assertEqual(row.locator('.filter-tag-select').input_value(), 'Holiday')
+            self.page.unroute('**/*act=timeline_tags_refresh')
+            with self.page.expect_response(lambda response: 'act=timeline_tags_refresh' in response.url):
+                row.get_by_role('button', name='Rescan gallery for tags').click()
+            self.page.wait_for_function('!filterTagsRequest')
+            self.assertIn('Gallery rescanned', self.page.locator('#filterTagStatus').inner_text())
+            self.assertEqual(row.locator('.filter-tag-select').input_value(), 'Holiday')
+            row.locator('.filter-tag-select').select_option(name)
+            self.page.set_viewport_size(dict(width=390,height=844))
+            self.assertTrue(self.page.evaluate('document.querySelector("#filterForm").scrollWidth <= innerWidth'))
+            self.apply()
+            self.assertIn('1 items', self.page.locator('#timelineStatus').inner_text())
+            self.assertEqual(self.page.locator('.story-photo img').get_attribute('alt'), 'new.jpg')
+        finally:
+            path.unlink(missing_ok=True)
+            with timeline.sqlite_connection(self.server.database) as db:
+                db.execute('DELETE FROM ImageTags WHERE tagid=9300')
+                db.execute('DELETE FROM Tags WHERE id=9300')
+                db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Tag picker')")
+            self.server.refresh('timeline_tags_refresh')
 
     def test_json_offsets_are_preserved_by_editor(self):
         query = self.server.filter_json(dict(field='creationDate',op='gt',value='2020-01-01T00:00:00+03:00'))

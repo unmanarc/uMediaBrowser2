@@ -148,9 +148,9 @@ class TimelineTests(unittest.TestCase):
         return json.loads(cls.get(urllib.parse.urlencode(params)))['data']
 
     @classmethod
-    def refresh(cls):
+    def refresh(cls, action='timeline_refresh'):
         token = next(cookie.value for cookie in cls.cookies if cookie.name == 'CSRFToken')
-        request = urllib.request.Request(cls.url+'?act=timeline_refresh', method='POST', headers={'X-CSRFToken':token})
+        request = urllib.request.Request(cls.url+'?'+urllib.parse.urlencode(dict(act=action)), method='POST', headers={'X-CSRFToken':token})
         return json.load(cls.client.open(request, timeout=20))['data']
 
     @classmethod
@@ -748,6 +748,95 @@ class TimelineTests(unittest.TestCase):
             self.assertNotIn('__SHARED_',html)
             script = html.split('<script>')[1].split('</script>')[0]
             subprocess.run(['node','--check','-'],input=script.encode(),check=True,capture_output=True)
+
+    def test_tag_catalog_hides_digikam_internal_tags(self):
+        """Hide technical properties and entire internal branches, retaining public namesakes."""
+        try:
+            with sqlite_connection(self.database) as db:
+                db.executemany('INSERT INTO Tags(id,pid,name) VALUES(?,?,?)', [
+                    (9400, 0, '_Digikam_Internal_Tags_'),
+                    (9401, 9400, 'Scanned for Faces'), (9402, 9401, 'Nested'),
+                    (9403, 0, '_Digikam_root_tag_'), (9404, 0, 'Technical'),
+                    (9405, 9404, 'Child'), (9406, 9403, 'Scanned for Faces'),
+                ])
+                db.execute('INSERT INTO ImageTags(imageid,tagid) SELECT i.id,t.id FROM Images i JOIN Albums a ON a.id=i.album CROSS JOIN Tags t WHERE a.relativePath=\'/Familiar/A beach\' AND i.name=\'same.jpg\' AND t.id BETWEEN 9400 AND 9406')
+            # Reserved branch detection also works without a TagProperties table.
+            self.assertEqual({t['id'] for t in self.api(act='timeline_tags')['tags']}, {9404, 9405, 9406})
+            with sqlite_connection(self.database) as db:
+                db.execute('CREATE TABLE TagProperties(tagid INTEGER, property TEXT, value TEXT)')
+                db.executemany('INSERT INTO TagProperties VALUES(?,?,?)', [
+                    (9404, 'internalTag', None), (9406, 'person', ''), (9406, 'noMetadataTag', ''),
+                ])
+            original = self.database.read_bytes()
+            tags = self.api(act='timeline_tags')['tags']
+            self.assertEqual([t['id'] for t in tags], [9406])
+            self.assertEqual(tags[0]['path'], 'Scanned for Faces')
+            self.assertEqual(self.database.read_bytes(), original)
+        finally:
+            with sqlite_connection(self.database) as db:
+                db.execute('DROP TABLE IF EXISTS TagProperties')
+                db.execute('DELETE FROM ImageTags WHERE tagid BETWEEN 9400 AND 9406')
+                db.execute('DELETE FROM Tags WHERE id BETWEEN 9400 AND 9406')
+
+    def test_tag_catalog_snapshot_and_rescan(self):
+        """SQL uses startup paths until an explicit rescan; digiKam remains read-only."""
+        live = self.root/'A beach/same.jpg'
+        parked = live.with_suffix('.parked')
+        added = self.photo('Tags/new-after-startup.jpg', 1_800_000_000)
+        try:
+            with sqlite_connection(self.database) as db:
+                db.executemany('INSERT INTO Tags(id,pid,name) VALUES(?,?,?)', [
+                    (9200, 0, 'Parent'), (9201, 9200, "Live <tag> & ñ"),
+                    (9202, 0, 'Missing'), (9203, 0, 'File symlink'),
+                    (9204, 0, 'Outside root'), (9205, 0, ' \t\n'),
+                    (9206, 0, ''), (9207, 0, 'Unused'), (9208, 0, 'Invalid date'),
+                    (9209, 0, 'Directory symlink'), (9210, 0, None),
+                    (9211, 0, 'New file'),
+                ])
+                for tagid, album, name in [
+                    (9201, '/Familiar/A beach', 'same.jpg'),
+                    (9202, '/Familiar', 'missing.jpg'),
+                    (9203, '/Familiar', 'escape.jpg'),
+                    (9204, '/FamiliarExtra', 'outside.jpg'),
+                    (9205, '/Familiar/A beach', 'same.jpg'),
+                    (9206, '/Familiar/A beach', 'same.jpg'),
+                    (9208, '/Familiar', 'invalid-date.jpg'),
+                    (9209, '/Familiar/loop/A beach', 'same.jpg'),
+                    (9210, '/Familiar/A beach', 'same.jpg'),
+                    (9211, '/Familiar/Tags', added.name),
+                ]:
+                    db.execute('INSERT INTO ImageTags(imageid,tagid) SELECT i.id,? FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath=? AND i.name=?',
+                               (tagid, album, name))
+            original = self.database.read_bytes()
+            catalog = self.api(act='timeline_tags')['tags']
+            self.assertEqual({t['id'] for t in catalog}, {9201, 9208})
+            self.assertEqual(next(t['path'] for t in catalog if t['id'] == 9201), 'Parent / Live <tag> & ñ')
+            self.assertTrue(all(t['count'] == 1 for t in catalog))
+            # A normal timeline refresh must not initiate a gallery scan.
+            live.rename(parked)
+            self.refresh()
+            self.assertEqual(self.api(act='timeline_tags')['tags'], catalog)
+            updated = self.refresh('timeline_tags_refresh')
+            self.assertGreater(updated['scanned_files'], 0)
+            self.assertEqual({t['id'] for t in updated['tags']}, {9208, 9211})
+            self.assertEqual(self.api(act='timeline_tags')['tags'], updated['tags'])
+            self.assertEqual(self.database.read_bytes(), original)
+            for action in ('timeline_tags_refresh',):
+                with self.assertRaises(urllib.error.HTTPError) as error: self.api(act=action)
+                self.assertEqual(error.exception.code, 405)
+                error.exception.close()
+                request = urllib.request.Request(self.url+'?act='+action, method='POST')
+                with self.assertRaises(urllib.error.HTTPError) as error: urllib.request.urlopen(request)
+                self.assertEqual(error.exception.code, 401)
+                error.exception.close()
+        finally:
+            if parked.exists(): parked.rename(live)
+            added.unlink(missing_ok=True)
+            with sqlite_connection(self.database) as db:
+                db.execute('DELETE FROM ImageTags WHERE tagid BETWEEN 9200 AND 9211')
+                db.execute('DELETE FROM Tags WHERE id BETWEEN 9200 AND 9211')
+                db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Tags')")
+            self.refresh('timeline_tags_refresh')
 
     def test_wal_commits_are_visible_and_read_only(self):
         writer = sqlite3.connect(self.database)
