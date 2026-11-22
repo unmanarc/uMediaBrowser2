@@ -8,6 +8,7 @@
 
 #include <chrono>
 #include <string>
+#include "timeline_database.h"
 
 struct webClientParams
 {
@@ -34,6 +35,7 @@ struct webClientParams
     std::string remoteIP;
     bool uploadOK;
     std::string appTitle;
+    std::shared_ptr<TimelineDatabase> timeline; ///< Read-only timeline query service; no media cache.
 
 };
 
@@ -111,6 +113,7 @@ private:
     Mantids30::Protocol::HTTP::Status::Code action_delete();
     Mantids30::Protocol::HTTP::Status::Code action_thumb();
     Mantids30::Protocol::HTTP::Status::Code action_detail();
+    Mantids30::Protocol::HTTP::Status::Code action_timeline();
 
     webClientParams webClientParameters;
     std::chrono::steady_clock::time_point reqStart;
