@@ -245,6 +245,30 @@ class TimelineTests(unittest.TestCase):
             self.assertEqual(self.database.read_bytes(), original)
             self.assertIn('unindexed.jpg', [i['name'] for i in self.api(act='ls', path='/', filter=tagged)['items']])
 
+    def test_filter_sql_payloads_are_literal_bound_values(self):
+        """Exercise real SQL binding, including payloads that actually exist as data."""
+        with self.filter_library():
+            payloads = ["' OR 1=1 --", "') OR 1=1 /*", "'; DROP TABLE Images; --",
+                        '\"; SELECT 1; --', "O'Brien %_ ñ", r"\' OR 1=1 --",
+                        ':filter0 :root ? @value $value', 'line\n--comment\n/*text*/']
+            for payload in payloads:
+                with sqlite_connection(self.database) as db:
+                    imageid = db.execute("SELECT id FROM Images WHERE name='e.jpg'").fetchone()[0]
+                    db.execute('UPDATE Tags SET name=? WHERE id=9103', (payload,))
+                    db.execute('UPDATE ImageMetadata SET make=?,model=?,lens=? WHERE imageid=?',
+                               (payload, payload, payload, imageid))
+                original = self.database.read_bytes()
+                for field in ('tag', 'make', 'model', 'lens'):
+                    leaf = dict(field=field, op='eq' if field == 'tag' else 'contains', value=payload)
+                    missing = dict(field='tag', op='eq', value='never-present-tag')
+                    queries = [self.filter_json(leaf),
+                               self.filter_json(dict(match='any', rules=[missing, leaf])),
+                               self.filter_json(dict(match='any', rules=[leaf, missing]), missing)]
+                    for query, expected in zip(queries, [{'e.jpg'}, {'e.jpg'}, set()]):
+                        with self.subTest(field=field, payload=payload, query=query):
+                            self.assertEqual({i['name'] for i in self.filtered_items(query)}, expected)
+                self.assertEqual(self.database.read_bytes(), original)
+
     def test_filters_metadata_operators_and_boolean_combinations(self):
         with self.filter_library():
             cases = [
@@ -358,7 +382,8 @@ class TimelineTests(unittest.TestCase):
         deep = valid
         for _ in range(5): deep = dict(match='any',rules=[deep])
         bad += [self.filter_json(group) for group in invalid_groups + [deep]]
-        invalid_rules = [dict(valid,field='unknown'), dict(valid,field='make) OR 1=1 --'), dict(valid,op='contains'),
+        invalid_rules = [dict(valid,field='unknown'), dict(valid,field='make) OR 1=1 --'),
+                         dict(valid,field='make\" OR 1=1 --'), dict(valid,op='eq OR 1=1 --'), dict(valid,op='contains'),
                          dict(valid,value=''), dict(valid,value='   '), dict(valid,value='x'*257), dict(valid,value='x\x00y'),
                          dict(valid,value=5), dict(valid,negate='true'), dict(valid,extra=True),
                          dict(field='make',op='eq',value='Canon'), dict(field='sensitivity',op='gt',value='400'),
