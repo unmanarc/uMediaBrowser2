@@ -1,6 +1,7 @@
 #include "webclienthdlr.h"
 #include "html_errors.h"
 #include "html_index_app.h"
+#include "html_timeline_app.h"
 #include <Mantids30/Core/Helpers/random.h>
 #include <Mantids30/Runtime/Logs/loglevels.h>
 #include <Mantids30/Protocol/HTTP/rsp_status.h>
@@ -211,6 +212,7 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
 
     if (clientRequest.content.getContainerType() == Content::ContainerType::MIME && method == "POST" && act == "upload" && webClientParameters.canUpload)
     {
+        if (webClientParameters.timeline) webClientParameters.timeline->invalidate();
         logRpc(Logs::INFO, "R/UPLOAD: %s", webClientParameters.uploadOK ? "completed" : "incomplete (no part processed)");
         boost::json::value data;
         Mantids30::DataFormat::JSON::setMember(data, "uploaded", webClientParameters.uploadOK);
@@ -236,11 +238,14 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
         return action_thumb();
     if (act == "detail")
         return action_detail();
+    if (act == "timeline" || act == "timeline_event" || act == "timeline_samples" || act == "timeline_refresh")
+        return action_timeline();
 
     if (method == "GET")
     {
         serverResponse.contentType = "text/html; charset=UTF-8";
-        getResponseContentStreamableObject()->writeString(buildHTMLApp(webClientParameters.appTitle));
+        getResponseContentStreamableObject()->writeString(HTTPVars_GET->getStringValue("view") == "timeline"
+            ? buildHTMLTimelineApp(webClientParameters.appTitle) : buildHTMLApp(webClientParameters.appTitle));
         return respond(HTTP::Status::Code::S_200_OK, clientRequest.getURI().c_str());
     }
 

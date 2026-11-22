@@ -62,6 +62,7 @@ Status::Code WebClientHdlr::action_delete()
 
         std::error_code ec;
         fs::remove_all(info.fullPath, ec);
+        if (webClientParameters.timeline) webClientParameters.timeline->invalidate();
         if (ec)
         {
             logRpc(Mantids30::Runtime::Logs::ERROR, "R/DEL-FAIL: '%s' (%s)", rel.c_str(), ec.message().c_str());
