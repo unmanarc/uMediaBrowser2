@@ -52,7 +52,8 @@ class TimelineTests(unittest.TestCase):
                 CREATE TABLE Albums(id INTEGER PRIMARY KEY, albumRoot INTEGER, relativePath TEXT, UNIQUE(albumRoot, relativePath));
                 CREATE TABLE Images(id INTEGER PRIMARY KEY, album INTEGER, name TEXT, modificationDate DATETIME, fileSize INTEGER);
                 CREATE TABLE ImageInformation(imageid INTEGER PRIMARY KEY, creationDate DATETIME);
-                CREATE TABLE Tags(id INTEGER PRIMARY KEY, pid INTEGER, name TEXT);
+                CREATE TABLE Tags(id INTEGER PRIMARY KEY, pid INTEGER, name TEXT, icon INTEGER, iconkde TEXT);
+                CREATE TABLE ImageTagProperties(imageid INTEGER, tagid INTEGER, property TEXT, value TEXT);
                 CREATE TABLE ImageTags(imageid INTEGER, tagid INTEGER, UNIQUE(imageid, tagid));
                 CREATE INDEX image_tags_image ON ImageTags(imageid);
                 CREATE TABLE ImageMetadata(imageid INTEGER PRIMARY KEY, make TEXT, model TEXT, lens TEXT,
@@ -929,6 +930,58 @@ class TimelineTests(unittest.TestCase):
             self.assertNotIn('__SHARED_',html)
             script = html.split('<script>')[1].split('</script>')[0]
             subprocess.run(['node','--check','-'],input=script.encode(),check=True,capture_output=True)
+
+    def test_tag_icons_cache_face_crop_and_scope(self):
+        """Tag artwork uses the selected image, optional cache, and the public media scope."""
+        cache = self.database.parent/'thumbnails-digikam.db'
+        with self.filter_library():
+            with sqlite_connection(self.database) as db:
+                image = db.execute("SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Filters' AND i.name LIKE 'IMG_%'").fetchone()[0]
+                db.execute('UPDATE Tags SET icon=? WHERE id=9104', (image,))
+                db.execute('INSERT INTO ImageTagProperties VALUES(?,9104,\'tagRegion\',?)',
+                           (image, '<rect x="20" y="10" width="20" height="20"/>'))
+            self.refresh('timeline_tags_refresh')
+            try:
+                tag = next(t for t in self.api(act='timeline_tags')['tags'] if t['id'] == 9104)
+                self.assertEqual(tag['icon'], '?act=timeline_tag_icon&id=9104')
+                self.assertEqual(next(t for t in self.api(act='timeline_tags')['tags'] if t['id'] == 9105)['icon'], '')
+                original = self.database.read_bytes()
+                cropped = self.get('act=timeline_tag_icon&id=9104')
+                size = subprocess.run(['identify', '-format', '%wx%h', '-'], input=cropped, check=True, capture_output=True).stdout
+                self.assertEqual(size, b'24x24')
+                self.assertEqual(self.database.read_bytes(), original)
+                self.assertFalse(cache.exists())
+                with sqlite_connection(cache) as db:
+                    db.executescript('''CREATE TABLE Thumbnails(id INTEGER PRIMARY KEY, data BLOB, orientationHint INTEGER);
+                        CREATE TABLE CustomIdentifiers(identifier TEXT, thumbId INTEGER);
+                        CREATE TABLE FilePaths(path TEXT, thumbId INTEGER);''')
+                    db.execute('INSERT INTO Thumbnails VALUES(1,?,1)', (self.base.read_bytes(),))
+                    db.execute('INSERT INTO CustomIdentifiers VALUES(?,1)', ('detail:'+str(self.root/'Filters/IMG_20300101-100000-a.jpg')+'?rect=18,8-24x24',))
+                cached = cache.read_bytes()
+                self.assertEqual(self.get('act=timeline_tag_icon&id=9104'), self.base.read_bytes())
+                self.assertEqual(cache.read_bytes(), cached)
+                # PGF or invalid cached blobs fall back to the original face crop.
+                with sqlite_connection(cache) as db:
+                    db.execute("UPDATE Thumbnails SET data=x'50474676'")
+                self.assertEqual(self.get('act=timeline_tag_icon&id=9104'), cropped)
+                with sqlite_connection(self.database) as db:
+                    db.execute('DELETE FROM ImageTagProperties WHERE tagid=9104')
+                with sqlite_connection(cache) as db:
+                    db.execute('UPDATE Thumbnails SET data=?', (self.base.read_bytes(),))
+                    db.execute('INSERT INTO FilePaths VALUES(?,1)', (str(self.root/'Filters/IMG_20300101-100000-a.jpg'),))
+                self.assertEqual(self.get('act=timeline_tag_icon&id=9104'), self.base.read_bytes())
+                # An assigned icon outside rootdir cannot be used to expose other media.
+                with sqlite_connection(self.database) as db:
+                    outside = db.execute("SELECT id FROM Images WHERE name='outside.jpg' LIMIT 1").fetchone()[0]
+                    db.execute('UPDATE Tags SET icon=? WHERE id=9104', (outside,))
+                for query, code in [('id=9104',404), ('id=9105',404), ('id=999999',404), ('id=0',400), ('id=1%20OR%201',400)]:
+                    with self.assertRaises(urllib.error.HTTPError) as error:
+                        self.get('act=timeline_tag_icon&'+query)
+                    self.assertEqual(error.exception.code, code)
+            finally:
+                cache.unlink(missing_ok=True)
+                with sqlite_connection(self.database) as db:
+                    db.execute('DELETE FROM ImageTagProperties WHERE tagid=9104')
 
     def test_tag_catalog_hides_digikam_internal_tags(self):
         """Hide technical properties and entire internal branches, retaining public namesakes."""

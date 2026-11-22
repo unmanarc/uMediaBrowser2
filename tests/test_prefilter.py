@@ -41,8 +41,8 @@ class PrefilterTests(unittest.TestCase):
             with timeline.sqlite_connection(cls.library.database) as db:
                 image = db.execute('SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath=? AND i.name=?',
                                    ('/Familiar/'+str(Path(name).parent), Path(name).name)).fetchone()[0]
-                db.execute('INSERT OR IGNORE INTO Tags VALUES(9800,0,\'Visible\')')
-                db.execute('INSERT OR IGNORE INTO Tags VALUES(9801,0,\'Hidden\')')
+                db.execute('INSERT OR IGNORE INTO Tags(id,pid,name) VALUES(9800,0,\'Visible\')')
+                db.execute('INSERT OR IGNORE INTO Tags(id,pid,name) VALUES(9801,0,\'Hidden\')')
                 db.execute('INSERT INTO ImageTags VALUES(?,?)', (image, 9800 if name in cls.allowed or 'missing' in name else 9801))
                 db.execute('INSERT INTO ImageMetadata(imageid,make,sensitivity) VALUES(?,?,?)', (image, 'Canon', (index+1)*100))
                 if 'no-date' in name:
@@ -181,6 +181,22 @@ class PrefilterTests(unittest.TestCase):
                         with tarfile.open(fileobj=content) as archive: names = set(archive.getnames())
                     self.assertEqual(names, expected)
             self.assert_http_error(400, lambda: server.read(act='archive', files='/Prefilter/hidden'))
+
+    def test_tag_icons_respect_prefilter(self):
+        with self.server() as server:
+            try:
+                with timeline.sqlite_connection(self.library.database) as db:
+                    allowed = db.execute("SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Prefilter/mixed' AND i.name='allowed.jpg'").fetchone()[0]
+                    excluded = db.execute("SELECT id FROM Images WHERE name='excluded.jpg'").fetchone()[0]
+                    db.execute('UPDATE Tags SET icon=? WHERE id IN (9800,9801)', (allowed,))
+                self.assertTrue(server.read(act='timeline_tag_icon', id=9800).startswith(b'\xff\xd8'))
+                self.assert_http_error(404, lambda: server.read(act='timeline_tag_icon', id=9801))
+                with timeline.sqlite_connection(self.library.database) as db:
+                    db.execute('UPDATE Tags SET icon=? WHERE id=9800', (excluded,))
+                self.assert_http_error(404, lambda: server.read(act='timeline_tag_icon', id=9800))
+            finally:
+                with timeline.sqlite_connection(self.library.database) as db:
+                    db.execute('UPDATE Tags SET icon=NULL WHERE id IN (9800,9801)')
 
     def test_export_roundtrip_and_loaded_once(self):
         user_rule = dict(field='sensitivity', op='gt', value=150)

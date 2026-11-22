@@ -7,6 +7,7 @@
 #include <Mantids30/Core/Memory/a_int64.h>
 #include <Mantids30/Core/Memory/a_string.h>
 #include <Mantids30/Core/Memory/a_double.h>
+#include <Mantids30/Core/Memory/a_bin.h>
 
 #include <algorithm>
 #include <charconv>
@@ -526,6 +527,81 @@ public:
         return result;
     }
 
+    /** @brief Resolve a public tag's selected image without crossing the media scope. */
+    TagIcon readTagIcon(int64_t tagId, const std::string &memoryURI)
+    {
+        checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
+        const auto definitions = tagDefinitions();
+        const auto tag = definitions.find(tagId);
+        if (tag == definitions.end() || tag->second.icon <= 0) throw Error(ErrorKind::NotFound, "Tag icon unavailable");
+        STRING file, folder;
+        auto input = bindings;
+        input[":icon"] = std::make_shared<INT64>(tag->second.icon);
+        input[":tag"] = std::make_shared<INT64>(tagId);
+        auto query = connection.qSelect(scope + R"SQL(
+            SELECT path,folder FROM image_dates WHERE imageid=:icon AND EXISTS (
+                SELECT 1 FROM image_dates assigned JOIN mem.existing_files f ON f.path=assigned.path
+                JOIN ImageTags it ON it.imageid=assigned.imageid WHERE it.tagid=:tag
+            )
+        )SQL", input, {&file, &folder});
+        checkQuery(query);
+        if (!query->step() || !exists(folder.getValue(), file.getValue()))
+            throw Error(ErrorKind::NotFound, "Tag icon unavailable");
+        TagIcon result;
+        result.file = file.getValue();
+        query.reset();
+        std::string detail;
+        if (connection.dbTableExist("ImageTagProperties"))
+        {
+            STRING region;
+            auto face = connection.qSelect("SELECT value FROM ImageTagProperties WHERE imageid=:image AND tagid=:tag AND property='tagRegion' ORDER BY value LIMIT 1",
+                {{":image", std::make_shared<INT64>(tag->second.icon)}, {":tag", std::make_shared<INT64>(tagId)}}, {&region});
+            checkQuery(face);
+            if (face->step())
+            {
+                // digiKam displays face rectangles with a ten-percent margin.
+                const auto xml = region.getValue();
+                auto attribute = [&](const std::string &name) -> int64_t {
+                    std::smatch match;
+                    if (!std::regex_search(xml, match, std::regex("\\b" + name + "=[\"']([0-9]{1,7})[\"']"))) return -1;
+                    return std::stoll(match[1]);
+                };
+                const auto x = attribute("x"), y = attribute("y"), w = attribute("width"), h = attribute("height");
+                if (x >= 0 && y >= 0 && w > 0 && h > 0)
+                {
+                    const auto margin = std::max(w, h) / 10;
+                    const auto left = x - margin, top = y - margin;
+                    result.crop = std::to_string(w + 2 * margin + std::min<int64_t>(0, left)) + "x" +
+                        std::to_string(h + 2 * margin + std::min<int64_t>(0, top)) + "+" +
+                        std::to_string(std::max<int64_t>(0, left)) + "+" + std::to_string(std::max<int64_t>(0, top));
+                    detail = "detail:" + result.file + "?rect=" + std::to_string(left) + "," + std::to_string(top) + "-" +
+                        std::to_string(w + 2 * margin) + "x" + std::to_string(h + 2 * margin);
+                }
+            }
+        }
+        // This optional cache must never prevent loading an icon from its original.
+        SQLConnector_SQLite3 thumbs;
+        thumbs.setThrowCPPErrorOnQueryFailure(false);
+        const auto cache = database.parent_path() / "thumbnails-digikam.db";
+        if (thumbs.connect("file:" + uriEncode(cache.string()) + "?mode=ro"))
+        {
+            BINARY bytes;
+            const auto sql = detail.empty() ?
+                "SELECT t.data FROM Thumbnails t JOIN FilePaths p ON p.thumbId=t.id WHERE p.path=:key AND COALESCE(t.orientationHint,0) IN (0,1) AND length(t.data) BETWEEN 1 AND 1048576" :
+                "SELECT t.data FROM Thumbnails t JOIN CustomIdentifiers c ON c.thumbId=t.id WHERE c.identifier=:key AND length(t.data) BETWEEN 1 AND 1048576";
+            auto cached = thumbs.qSelect(sql, {{":key", std::make_shared<STRING>(detail.empty() ? result.file : detail)}}, {&bytes});
+            if (cached && cached->getLastSQLError().empty() && cached->step())
+            {
+                const auto data = bytes.toString();
+                if (data.compare(0, 3, "\xff\xd8\xff") == 0) result.mime = "image/jpeg";
+                else if (data.compare(0, 8, std::string("\x89PNG\r\n\x1a\n", 8)) == 0) result.mime = "image/png";
+                // PGF thumbnails need a decoder; use the original below instead.
+                if (!result.mime.empty()) result.data = data;
+            }
+        }
+        return result;
+    }
+
 private:
     static bool tagLess(const Tag &a, const Tag &b)
     {
@@ -555,12 +631,21 @@ private:
             checkQuery(query, true);
         }
         std::map<int64_t, Tag> hierarchy;
-        INT64 id, parent;
+        INT64 id, parent, icon;
         STRING name;
         {
-            auto query = connection.qSelect("SELECT id, COALESCE(pid,0), COALESCE(name,'') FROM Tags", {}, {&id, &parent, &name});
+            // Minimal/older catalogs may omit the optional icon column.
+            bool hasIcon = false;
+            STRING column;
+            auto columns = connection.qSelect("SELECT name FROM pragma_table_info('Tags')", {}, {&column});
+            checkQuery(columns);
+            while (columns->step()) if (column.getValue() == "icon") hasIcon = true;
+            checkQuery(columns, true);
+            columns.reset();
+            auto query = connection.qSelect("SELECT id, COALESCE(pid,0), COALESCE(name,''), " +
+                std::string(hasIcon ? "COALESCE(icon,0)" : "0") + " FROM Tags", {}, {&id, &parent, &name, &icon});
             checkQuery(query);
-            while (query->step()) hierarchy.emplace(id.getValue(), Tag{id.getValue(), parent.getValue(), name.getValue(), {}, 0});
+            while (query->step()) hierarchy.emplace(id.getValue(), Tag{id.getValue(), parent.getValue(), name.getValue(), {}, 0, icon.getValue()});
             checkQuery(query, true);
         }
         std::map<int64_t, Tag> result;
@@ -849,6 +934,19 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
     }
     Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
     auto result = reader.readTags(snapshot->uri);
+    reader.verify();
+    return result;
+}
+
+TimelineDatabase::TagIcon TimelineDatabase::tagIcon(int64_t id) const
+{
+    std::shared_ptr<FileSnapshot> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        snapshot = fileSnapshot;
+    }
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
+    auto result = reader.readTagIcon(id, snapshot->uri);
     reader.verify();
     return result;
 }

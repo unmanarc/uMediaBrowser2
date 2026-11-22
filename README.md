@@ -241,6 +241,14 @@ with a progress message while scanning. Readers can continue using the previous
 snapshot until the replacement is ready; a failed scan preserves it. The ordinary
 timeline refresh keeps its existing behavior and does not rescan the tag snapshot.
 Saved conditions referring to a removed tag remain visible as disabled options.
+Tag conditions use a fixed **Is** comparison. The searchable tag picker shows
+the image selected as each tag's digiKam icon, including face crops. Artwork
+loads on demand through `GET ?act=timeline_tag_icon&id=TAG_ID`; both the tag and
+its icon image must be within the configured public media scope. The optional
+`thumbnails-digikam.db` beside the discovered `digikam4.db` is opened read-only
+for JPEG/PNG thumbnails. Missing, unreadable or PGF thumbnails fall back to an
+80-pixel preview generated from the original image using ImageMagick. Tags
+without usable artwork show a generic symbol.
 
 Camera manufacturer, model and lens dropdowns show distinct, nonblank database
 values for files in the same existing-path snapshot, respecting `--rootdir` and

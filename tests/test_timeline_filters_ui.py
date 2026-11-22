@@ -55,7 +55,12 @@ class TimelineFilterUITests(unittest.TestCase):
         row = self.page.locator('.filter-rule').last if group is None else group.locator(':scope > .filter-group-rules > .filter-rule').last
         row.get_by_label('Field', exact=True).select_option(field)
         if op: row.get_by_label('Comparison', exact=True).select_option(op)
-        if field in ('tag', 'make', 'model', 'lens'): row.get_by_label('Value', exact=True).select_option(value)
+        if field == 'tag':
+            if value:
+                row.get_by_role('combobox', name='Value', exact=True).click()
+                row.get_by_label('Search tags', exact=True).fill(value)
+                row.locator('.filter-tag-options').get_by_role('option').filter(has_text=value).first.click()
+        elif field in ('make', 'model', 'lens'): row.get_by_label('Value', exact=True).select_option(value)
         else: row.get_by_label('Value', exact=True).fill(value)
         if negate: row.get_by_label('Include or exclude condition').select_option('true')
         return row
@@ -75,6 +80,55 @@ class TimelineFilterUITests(unittest.TestCase):
             self.page.get_by_role('button', name='Apply & refresh timeline').click()
         self.page.wait_for_function('feed.loaded')
         self.assertFalse(self.page.locator('#timelineFilterDialog').is_visible())
+
+    def test_tag_picker_artwork_search_keyboard_and_fixed_comparison(self):
+        with timeline.sqlite_connection(self.server.database) as db:
+            db.execute("UPDATE Tags SET icon=(SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Filters' AND i.name='b.jpg') WHERE id=9104")
+        try:
+            self.open_editor()
+            row = self.add_rule('tag', '')
+            self.assertTrue(row.get_by_label('Comparison', exact=True).is_hidden())
+            self.assertEqual(row.locator('.filter-comparison-static').inner_text(), 'Is')
+            button = row.get_by_role('combobox', name='Value', exact=True)
+            button.click()
+            option = row.get_by_role('option', name='Aaron', exact=True)
+            option.locator('img').wait_for()
+            self.page.wait_for_function('document.querySelector(".filter-tag-option img")?.naturalWidth > 0')
+            self.page.screenshot(path='/tmp/umedia-tag-picker-desktop.png', full_page=True)
+            search = row.get_by_label('Search tags', exact=True)
+            search.fill('aar')
+            self.assertEqual(row.locator('.filter-tag-options').get_by_role('option').count(), 1)
+            search.press('ArrowDown')
+            self.assertTrue(option.evaluate('(element) => element === document.activeElement'))
+            option.press('Enter')
+            self.assertEqual(row.locator('.filter-tag-select').input_value(), 'Aaron')
+            self.assertEqual(button.get_attribute('aria-expanded'), 'false')
+            self.assertEqual(row.locator('.filter-tag-button img').count(), 1)
+            button.click()
+            search.fill('<script>')
+            self.assertIn('No matching tags', row.locator('.filter-tag-options').inner_text())
+            search.press('Escape')
+            self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
+            self.assertEqual(row.locator('.filter-tag-select').input_value(), 'Aaron')
+            self.page.set_viewport_size(dict(width=390,height=844))
+            button.click()
+            self.assertTrue(self.page.evaluate('document.querySelector("#filterForm").scrollWidth <= innerWidth'))
+            self.page.screenshot(path='/tmp/umedia-tag-picker-mobile.png', full_page=True)
+            search.press('Escape')
+            row.get_by_label('Field', exact=True).select_option('sensitivity')
+            self.assertTrue(row.get_by_label('Comparison', exact=True).is_visible())
+            self.assertEqual(row.locator('.filter-tag-picker').count(), 0)
+            row.get_by_label('Field', exact=True).select_option('tag')
+            self.assertTrue(row.get_by_label('Comparison', exact=True).is_hidden())
+            self.assertEqual(row.locator('.filter-tag-picker').count(), 1)
+            button.click()
+            search.fill('Aaron')
+            row.get_by_role('option', name='Aaron', exact=True).click()
+            self.apply()
+            self.assertEqual(json.loads(self.page.evaluate('filterJSON'))['rules'][0]['op'], 'eq')
+        finally:
+            with timeline.sqlite_connection(self.server.database) as db:
+                db.execute('UPDATE Tags SET icon=NULL WHERE id=9104')
 
     def test_timeline_order_persists_through_filters_and_navigation(self):
         newest = self.page.locator('.story').first.evaluate('(card) => card._event.end')
@@ -233,7 +287,7 @@ class TimelineFilterUITests(unittest.TestCase):
     def test_tag_list_manual_rescan_and_failure_retry(self):
         self.open_editor()
         row = self.add_rule('tag', 'Holiday')
-        self.assertEqual(row.locator('input').count(), 0)
+        self.assertEqual(row.locator('input:not([type="search"])').count(), 0)
         self.assertIn("O'Brien %_ ñ", row.locator('.filter-tag-select').inner_text())
         path = self.server.photo('Tag picker/new.jpg', 1_800_000_000)
         name = '<tag> & new ñ'
@@ -258,7 +312,7 @@ class TimelineFilterUITests(unittest.TestCase):
             self.page.wait_for_function('!filterTagsRequest')
             self.assertIn('Gallery rescanned', self.page.locator('#filterTagStatus').inner_text())
             self.assertEqual(row.locator('.filter-tag-select').input_value(), 'Holiday')
-            row.locator('.filter-tag-select').select_option(name)
+            row.locator('.filter-tag-select').select_option(name, force=True)
             self.page.set_viewport_size(dict(width=390,height=844))
             self.assertTrue(self.page.evaluate('document.querySelector("#filterForm").scrollWidth <= innerWidth'))
             self.apply()
@@ -297,7 +351,7 @@ class TimelineFilterUITests(unittest.TestCase):
             rules = self.page.locator('#filterRules > .filter-rule')
             self.assertEqual(rules.count(), 2)
             self.assertEqual(rules.last.get_by_label('Field', exact=True).input_value(), 'tag')
-            self.assertEqual(rules.last.get_by_label('Value', exact=True).input_value(), 'Holiday')
+            self.assertEqual(rules.last.locator('.filter-tag-select').input_value(), 'Holiday')
             self.assertEqual(rules.last.get_by_label('Include or exclude condition').input_value(), 'false')
             self.assertEqual(self.page.url, original_url)
             self.assertEqual(self.page.evaluate('appliedFilter'), original_filter)

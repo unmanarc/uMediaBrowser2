@@ -67,6 +67,7 @@ public:
         std::string name; ///< Exact name used by the existing tag filter contract.
         std::string path; ///< Ancestor names for distinguishing tag branches.
         size_t count = 0; ///< Distinct assigned files (tag catalog only).
+        int64_t icon = 0; ///< digiKam image ID selected as this tag's icon.
     };
 
     /** @brief One existing file; paths are relative to the configured HTTP root. */
@@ -118,6 +119,17 @@ public:
 
     /** @brief Query tags through SQL joins, without filesystem existence checks. */
     std::vector<Tag> tags() const;
+
+    /** @brief Scoped tag artwork, with an optional browser-readable cached thumbnail. */
+    struct TagIcon
+    {
+        std::string file; ///< Validated absolute original path beneath rootdir.
+        std::string crop; ///< ImageMagick geometry for the selected face, if present.
+        std::string data; ///< Optional JPEG/PNG bytes from thumbnails-digikam.db.
+        std::string mime; ///< MIME type of data.
+    };
+    /** @brief Resolve artwork only for public, available tags and allowed icon files. */
+    TagIcon tagIcon(int64_t id) const;
 
     /** @brief Distinct camera text values for existing paths, scoped to the mandatory prefilter.
      * Reuses the tag path snapshot; reads metadata afresh without a filesystem scan.

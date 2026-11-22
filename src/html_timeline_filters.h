@@ -40,6 +40,23 @@ i.ic-filter{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3
 .filter-rule-controls>div{min-width:0;}
 .filter-control{display:flex;flex-direction:column;gap:7px;min-width:0;font-size:12px;color:var(--fg-dim);}
 .filter-control :is(input,select){width:100%;font-size:14px;}
+.filter-rule-controls.is-tag{grid-template-columns:1.2fr auto 1.4fr;align-items:start;}
+.filter-comparison-static{padding-top:32px;font-size:14px;color:var(--fg);}
+.filter-comparison-static[hidden],.filter-control[hidden]{display:none;}
+.filter-tag-picker{position:relative;min-width:0;}
+.filter-tag-picker .filter-tag-select{position:absolute;width:1px!important;height:1px;padding:0!important;opacity:0;pointer-events:none;}
+.filter-tag-button{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:8px 12px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--fg);font:inherit;text-align:left;cursor:pointer;}
+.filter-tag-button::after{content:'▾';margin-left:auto;}
+.filter-tag-button[aria-invalid="true"]{border-color:var(--danger);}
+.filter-tag-button span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.filter-tag-art{width:32px;height:32px;flex:none;border-radius:6px;object-fit:cover;background:var(--panel);}
+span.filter-tag-art{display:grid;place-items:center;color:var(--fg-dim);font-size:22px;}
+.filter-tag-menu{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:5;padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--panel);box-shadow:0 12px 32px #0006;}
+.filter-tag-menu[hidden]{display:none;}
+.filter-tag-options{max-height:280px;overflow:auto;margin-top:8px;}
+.filter-tag-option{display:flex;align-items:center;gap:10px;width:100%;border:0;border-radius:5px;padding:7px;background:transparent;color:var(--fg);font:inherit;text-align:left;cursor:pointer;overflow-wrap:anywhere;}
+.filter-tag-option:hover,.filter-tag-option:focus-visible,.filter-tag-option[aria-selected="true"]{background:#3b82f626;}
+.filter-tag-empty{padding:12px;color:var(--fg-dim);}
 .filter-date-zone{margin-top:7px;width:100%;}
 .filter-tag-refresh{margin-top:7px;font-size:12px;}
 .filter-tag-refresh[hidden]{display:none;}
@@ -62,6 +79,8 @@ i.ic-filter{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3
  .filter-body{padding:20px 14px;}
  .filter-rule{padding:16px;}
  .filter-rule-controls{grid-template-columns:1fr;gap:12px;}
+ .filter-rule-controls.is-tag{grid-template-columns:1fr;}
+ .filter-comparison-static{padding-top:0;}
  .filter-rule-top{gap:8px;flex-wrap:wrap;}
  .filter-group{padding:10px;}
  .filter-group-top .filter-match{flex-basis:100%;}
@@ -142,7 +161,7 @@ function updatePrefilterNotice(page){
   $('#filterReset').textContent = page.prefilter_active ? 'Reset user filters' : 'Reset all & show everything';
 }
 
-/** @brief Fill native tag lists safely, retaining unavailable applied values as disabled context. */
+/** @brief Retain exact tag names and unavailable saved values behind the visual picker. */
 function populateTagSelect(select,selected){
   select.replaceChildren(filterOption('',filterTags === null ? 'Loading tags…' : filterTags.length ? 'Choose a tag…' : 'No tags with existing files'));
   (filterTags || []).forEach(function(tag){ select.appendChild(filterOption(tag.name,tag.path)); });
@@ -150,7 +169,85 @@ function populateTagSelect(select,selected){
     var unavailable = filterOption(selected,selected + ' (unavailable)'); unavailable.disabled = true; select.appendChild(unavailable);
   }
   select.value = selected || '';
+  if (select._renderTagPicker) select._renderTagPicker();
 }
+
+var filterTagPickerSerial = 0;
+/** @brief Decorative artwork with a stable fallback for tags without a readable icon. */
+function filterTagArt(tag){
+  var fallback = document.createElement('span'); fallback.className = 'filter-tag-art';
+  fallback.textContent = '◇'; fallback.setAttribute('aria-hidden','true');
+  if (!tag || !tag.icon) return fallback;
+  var image = document.createElement('img'); image.className = 'filter-tag-art';
+  image.alt = ''; image.loading = 'lazy'; image.src = tag.icon;
+  image.onerror = function(){ image.replaceWith(fallback); };
+  return image;
+}
+/** @brief Searchable image list with native required-value validation and keyboard access. */
+function attachTagPicker(select){
+  var picker = document.createElement('div'); picker.className = 'filter-tag-picker';
+  select.replaceWith(picker); picker.appendChild(select); select._tagPicker = picker;
+  select.tabIndex = -1; select.setAttribute('aria-hidden','true'); select.setAttribute('aria-label','Selected tag');
+  var button = document.createElement('button'); button.type = 'button'; button.className = 'filter-tag-button';
+  button.setAttribute('role','combobox'); button.setAttribute('aria-label','Value');
+  button.setAttribute('aria-haspopup','listbox'); button.setAttribute('aria-expanded','false');
+  var menu = document.createElement('div'); menu.className = 'filter-tag-menu'; menu.hidden = true;
+  var search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search tags…';
+  search.setAttribute('aria-label','Search tags');
+  var list = document.createElement('div'); list.className = 'filter-tag-options'; list.setAttribute('role','listbox');
+  list.setAttribute('aria-label','Tags'); list.id = 'filterTagOptions' + (++filterTagPickerSerial);
+  button.setAttribute('aria-controls',list.id); search.setAttribute('aria-controls',list.id);
+  menu.append(search,list); picker.append(button,menu);
+  function close(focus){ menu.hidden = true; button.setAttribute('aria-expanded','false'); if (focus) button.focus(); }
+  function renderList(){
+    list.replaceChildren();
+    var term = search.value.toLocaleLowerCase();
+    (filterTags || []).filter(function(tag){ return tag.path.toLocaleLowerCase().includes(term); }).forEach(function(tag){
+      var option = document.createElement('button'); option.type = 'button'; option.tabIndex = -1; option.className = 'filter-tag-option';
+      option.setAttribute('role','option'); option.setAttribute('aria-selected',String(select.value === tag.name));
+      var text = document.createElement('span'); text.textContent = tag.path;
+      option.append(filterTagArt(tag),text);
+      option.onclick = function(){ select.value = tag.name; select.dispatchEvent(new Event('change',{bubbles:true})); close(true); };
+      list.appendChild(option);
+    });
+    if (!list.children.length){
+      var empty = document.createElement('div'); empty.className = 'filter-tag-empty';
+      empty.textContent = filterTags === null ? 'Loading tags…' : 'No matching tags'; list.appendChild(empty);
+    }
+  }
+  select._renderTagPicker = function(){
+    var tag = (filterTags || []).find(function(tag){ return tag.name === select.value; });
+    var text = document.createElement('span'); text.textContent = select.selectedOptions[0].textContent;
+    button.replaceChildren(filterTagArt(tag),text); button.title = text.textContent;
+    button.removeAttribute('aria-invalid'); if (!menu.hidden) renderList();
+  };
+  select.addEventListener('change',select._renderTagPicker);
+  select.addEventListener('invalid',function(event){ event.preventDefault(); close(false); button.setAttribute('aria-invalid','true'); button.focus(); });
+  button.onclick = function(){
+    if (!menu.hidden){ close(false); return; }
+    $$('.filter-tag-menu').forEach(function(other){ if (other !== menu) other.parentElement._closeTagPicker(); });
+    menu.hidden = false; button.setAttribute('aria-expanded','true'); search.value = ''; renderList(); search.focus();
+  };
+  button.onkeydown = function(event){ if (event.key === 'ArrowDown' || event.key === 'ArrowUp'){ event.preventDefault(); if (menu.hidden) button.click(); } };
+  search.oninput = renderList;
+  picker.onkeydown = function(event){
+    if (event.key === 'Escape' && !menu.hidden){ event.preventDefault(); event.stopPropagation(); close(true); }
+    if (['ArrowDown','ArrowUp','Home','End'].includes(event.key) && !menu.hidden){
+      var options = $$('[role="option"]',list); if (!options.length) return;
+      event.preventDefault(); var index = options.indexOf(document.activeElement);
+      index = event.key === 'Home' ? 0 : event.key === 'End' ? options.length - 1 :
+        (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+      options[index].focus();
+    }
+    if (event.key === 'Enter' && event.target === search){ event.preventDefault(); var first = $('[role="option"]',list); if (first) first.click(); }
+  };
+  picker.onfocusout = function(){ setTimeout(function(){ if (!picker.contains(document.activeElement)) close(false); },0); };
+  picker._closeTagPicker = function(){ close(false); };
+  select._renderTagPicker();
+}
+document.addEventListener('pointerdown',function(event){
+  $$('.filter-tag-picker').forEach(function(picker){ if (!picker.contains(event.target)) picker._closeTagPicker(); });
+});
 /** @brief Ordinary reads reuse the server snapshot; only the refresh action scans disk. */
 function loadFilterTags(rescan){
   if (filterTagsRequest) return filterTagsRequest;
@@ -267,11 +364,15 @@ function addFilterRule(rule,focus,parent){
   refreshTags.disabled = !!filterTagsRequest; refreshTags.onclick = function(){ loadFilterTags(true); };
   valueControl.appendChild(refreshTags);
   var hint = document.createElement('p'); hint.className = 'filter-hint';
-  controls.append(filterControl('Field',field),filterControl('Comparison',op),valueControl);
+  var comparison = filterControl('Comparison',op);
+  var staticIs = document.createElement('span'); staticIs.className = 'filter-comparison-static'; staticIs.textContent = 'Is'; staticIs.hidden = true;
+  controls.append(filterControl('Field',field),comparison,staticIs,valueControl);
   row.append(top,controls,hint); (parent || $('#filterRules')).appendChild(row);
   row._controls = {field:field,op:op,value:value,negate:negate,zone:zone};
   function sync(initial){
     var info = filterFields.find(function(item){ return item.field === field.value; });
+    comparison.hidden = info.type === 'tag'; staticIs.hidden = info.type !== 'tag';
+    controls.classList.toggle('is-tag',info.type === 'tag');
     op.replaceChildren();
     if (info.type === 'number') op.append(filterOption('eq','Equals (=)'),filterOption('gt','Greater than (>)'),filterOption('lt','Less than (<)'));
     else if (info.type === 'date') op.append(filterOption('gt','After (>)'),filterOption('lt','Before (<)'));
@@ -280,6 +381,7 @@ function addFilterRule(rule,focus,parent){
       if (initial && info.type === 'text' && rule.op === 'contains') op.append(filterOption('contains','Contains text (saved filter)'));
     }
     if (initial) op.value = rule.op; if (!op.value) op.selectedIndex = 0;
+    if (value._tagPicker) value._tagPicker.replaceWith(value);
     var nextValue = document.createElement(info.type === 'tag' || info.type === 'text' ? 'select' : 'input'); nextValue.required = true;
     nextValue.setAttribute('aria-label','Value'); value.replaceWith(nextValue); value = nextValue; row._controls.value = value;
     refreshTags.hidden = info.type !== 'tag' && info.type !== 'text';
@@ -287,6 +389,7 @@ function addFilterRule(rule,focus,parent){
     if (info.type === 'tag'){
       value.className = 'filter-tag-select'; populateTagSelect(value,initial ? String(rule.value) : '');
       value.onchange = function(){ value.setCustomValidity(''); };
+      attachTagPicker(value);
       zone.hidden = true; hint.textContent = info.hint;
       if (filterTags === null && !filterTagsRequest) loadFilterTags(false);
       return;
@@ -324,8 +427,9 @@ function addFilterRule(rule,focus,parent){
     hint.textContent = info.hint;
     value.oninput = function(){ value.setCustomValidity(''); };
   }
-  field.onchange = function(){ sync(false); value.focus(); };
-  sync(true); countFilterRules(); if (focus) value.focus();
+  function focusValue(){ (value._tagPicker ? $('.filter-tag-button',value._tagPicker) : value).focus(); }
+  field.onchange = function(){ sync(false); focusValue(); };
+  sync(true); countFilterRules(); if (focus) focusValue();
 }
 /** @brief Open a disposable draft; native Escape and Cancel never change the feed. */
 function openTimelineFilters(){

@@ -262,7 +262,7 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
     if (act == "detail")
         return action_detail();
     if (act == "timeline" || act == "timeline_event" || act == "timeline_samples" || act == "timeline_refresh" ||
-        act == "timeline_tags" || act == "timeline_tags_refresh" || act == "timeline_filter_values" || act == "current_filter")
+        act == "timeline_tags" || act == "timeline_tags_refresh" || act == "timeline_tag_icon" || act == "timeline_filter_values" || act == "current_filter")
         return action_timeline();
 
     if (method == "GET")

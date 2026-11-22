@@ -3,6 +3,7 @@
  */
 #include "../webclienthdlr.h"
 #include <Mantids30/Protocol/HTTP/rsp_status.h>
+#include <Mantids30/Core/Helpers/appexec.h>
 
 #include <algorithm>
 #include <filesystem>
@@ -82,6 +83,36 @@ Status::Code WebClientHdlr::action_timeline()
     {
         const auto filter = TimelineFilter::parse(vars->getStringValue("filter"));
         auto &database = *webClientParameters.timeline;
+        if (act == "timeline_tag_icon")
+        {
+            size_t id;
+            if (!number(vars->getStringValue("id"), id, 0) || id == 0 || id > INT64_MAX)
+                return finish(Status::Code::S_400_BAD_REQUEST, "Invalid tag ID");
+            auto icon = database.tagIcon(static_cast<int64_t>(id));
+            if (icon.data.empty())
+            {
+                Mantids30::Core::Helpers::AppSpawn process;
+                if (!process.setExec("/usr/bin/convert"))
+                    return finish(Status::Code::S_404_NOT_FOUND, "Tag icon unavailable");
+                std::vector<std::string> args{icon.file + "[0]", "-auto-orient"};
+                if (!icon.crop.empty()) args.insert(args.end(), {"-crop", icon.crop, "+repage"});
+                args.insert(args.end(), {"-thumbnail", "80x80>", "-strip", "-quality", "80", "jpg:-"});
+                for (const auto &arg : args) process.addArgument(arg);
+                if (!process.spawnProcess(true, false))
+                    return finish(Status::Code::S_404_NOT_FOUND, "Tag icon unavailable");
+                char buffer[8192];
+                ssize_t length;
+                while ((length = process.read(1, buffer, sizeof(buffer))) > 0) icon.data.append(buffer, length);
+                process.waitUntilProcessEnds();
+                if (icon.data.compare(0, 3, "\xff\xd8\xff") != 0)
+                    return finish(Status::Code::S_404_NOT_FOUND, "Tag icon unavailable");
+                icon.mime = "image/jpeg";
+            }
+            serverResponse.contentType = icon.mime;
+            serverResponse.headers.replace("Cache-Control", "private, max-age=300");
+            getResponseContentStreamableObject()->writeString(icon.data);
+            return respond(Status::Code::S_200_OK, clientRequest.getURI());
+        }
         if (act == "current_filter")
         {
             // An exported object must be accepted unchanged by --prefilter.
@@ -98,7 +129,8 @@ Status::Code WebClientHdlr::action_timeline()
             boost::json::array tags;
             for (const auto &tag : database.tags())
                 tags.push_back(boost::json::object{{"id", tag.id}, {"parent_id", tag.parent},
-                    {"name", tag.name}, {"path", tag.path}, {"count", tag.count}});
+                    {"name", tag.name}, {"path", tag.path}, {"count", tag.count},
+                    {"icon", tag.icon > 0 ? "?act=timeline_tag_icon&id=" + std::to_string(tag.id) : ""}});
             boost::json::object result{{"tags", std::move(tags)}};
             if (rescan) result["scanned_files"] = scanned;
             return finish(Status::Code::S_200_OK, "", result);
