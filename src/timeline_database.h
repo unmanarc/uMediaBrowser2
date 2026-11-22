@@ -125,7 +125,7 @@ public:
      * @param root Existing directory passed via --rootdir; canonicalized once.
      * @param gapSeconds Inactivity threshold starting a new event (default: 30 minutes).
      * @param logger Optional application logger; must outlive this instance.
-     * @param tagExclusions Compiled expressions hiding matching tags and their descendants from the picker only.
+     * @param tagExclusions Compiled expressions hiding matching tags and their descendants from the picker and informational badges.
      * @throws std::filesystem::filesystem_error If root cannot be resolved.
      */
     explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60,
@@ -176,5 +176,5 @@ private:
     std::mutex scanMutex; ///< Serializes manual rescans.
     std::shared_ptr<FileSnapshot> fileSnapshot; ///< Immutable existing-path table.
     Mantids30::Runtime::Logs::AppLog *logger; ///< Application-owned scan logger.
-    const std::vector<std::regex> tagExclusions; ///< Picker visibility only; never media filtering.
+    const std::vector<std::regex> tagExclusions; ///< Tag visibility only; never media filtering.
 };

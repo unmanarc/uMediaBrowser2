@@ -233,9 +233,11 @@ public:
      * @param root Canonical HTTP root.
      * @param version Revision counter captured by the calling API method.
      * @param filter Validated conditions included in SQL scope and revision identity.
+     * @param exclusions Rules hiding tag names and their descendants from all tag output.
      * @throws Error If discovery, connection, schema access or URI support fails.
      */
-    Reader(const std::string &root, uint64_t version, const TimelineFilter &filter) : root(root), database(findDatabase(root))
+    Reader(const std::string &root, uint64_t version, const TimelineFilter &filter, const std::vector<std::regex> &exclusions)
+        : exclusions(exclusions), root(root), database(findDatabase(root))
     {
         if (database.empty()) throw Error(ErrorKind::Unavailable, "No digikam4.db found in --rootdir or its ancestors.");
         if (!sqlite3_compileoption_used("USE_URI"))
@@ -446,10 +448,10 @@ public:
      * Ancestors provide labels only; a parent without assigned files is not an
      * option. Missing dates do not disqualify a file from the tag catalog.
      */
-    std::vector<Tag> readTags(const std::string &memoryURI, const std::vector<std::regex> &exclusions)
+    std::vector<Tag> readTags(const std::string &memoryURI)
     {
         checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
-        const auto definitions = tagDefinitions(exclusions);
+        const auto definitions = tagDefinitions();
         INT64 id, count;
         std::vector<Tag> result;
         auto query = connection.qSelect(scope + R"SQL(
@@ -478,10 +480,10 @@ private:
     }
 
     /** @brief Resolve public names and paths once, hiding technical branches.
-     * Picker exclusions are optional; informational badges retain those tags.
+     * Configured exclusions apply equally to the picker and informational badges.
      * Cycle detection also protects malformed digiKam hierarchies.
      */
-    std::map<int64_t, Tag> tagDefinitions(const std::vector<std::regex> &exclusions = {})
+    std::map<int64_t, Tag> tagDefinitions()
     {
         const auto hidden = [&](const std::string &name) {
             return std::any_of(exclusions.begin(), exclusions.end(), [&](const std::regex &pattern) {
@@ -694,6 +696,7 @@ private:
         return known->second && fs::is_regular_file(fs::symlink_status(file, ec)) && !ec;
     }
 
+    const std::vector<std::regex> &exclusions; ///< Shared visibility rules for all tag output.
     std::map<int64_t, Tag> mediaTags; ///< Request-local public names/paths, shared by displayed events.
     bool mediaTagsLoaded = false;
     std::string root; ///< Canonical HTTP root for all statements in this request.
@@ -764,8 +767,8 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
         std::lock_guard<std::mutex> lock(snapshotMutex);
         snapshot = fileSnapshot;
     }
-    Reader reader(root, generation.load(), {});
-    auto result = reader.readTags(snapshot->uri, tagExclusions);
+    Reader reader(root, generation.load(), {}, tagExclusions);
+    auto result = reader.readTags(snapshot->uri);
     reader.verify();
     return result;
 }
@@ -777,7 +780,7 @@ TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, c
     const auto version = generation.load();
     try
     {
-        Reader reader(root, version, filter);
+        Reader reader(root, version, filter, tagExclusions);
         reader.requireRevision(revision);
         auto page = reader.readFeed(cursor, limit, gap);
         reader.verify();
@@ -798,7 +801,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 {
     if (!limit || limit > 60) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     const auto version = generation.load();
-    Reader reader(root, version, filter);
+    Reader reader(root, version, filter, tagExclusions);
     auto page = reader.readEvent(reader.decodeEvent(id), cursor, limit, false);
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
@@ -808,7 +811,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 TimelineDatabase::Event TimelineDatabase::samples(const std::string &id, const TimelineFilter &filter) const
 {
     const auto version = generation.load();
-    Reader reader(root, version, filter);
+    Reader reader(root, version, filter, tagExclusions);
     auto event = reader.readEvent(reader.decodeEvent(id), 0, 0, true).event;
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");

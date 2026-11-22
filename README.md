@@ -141,7 +141,7 @@ Each badge shows the tag's short name; hover to see its full ancestor path. Tags
 from different branches retain separate identities and consistent colors. In the
 carousel, the current file's badges appear along the bottom while hovering over
 the image, and remain visible on touch devices. Tags marked as digiKam internal
-are omitted. Picker exclusion rules do not hide these informational badges.
+are omitted. Tag exclusion rules hide matching tags and their descendants from these badges too.
 
 Every request reads the current database; new digiKam entries and file removals
 do not require rebuilding an index or restarting the server. New files appear in
@@ -183,7 +183,7 @@ timeline refresh keeps its existing behavior and does not rescan the tag snapsho
 Saved conditions referring to a removed tag remain visible as disabled options.
 
 Use `--tag-exclude-file /path/to/hidden-tags.txt` to hide additional tags from the
-picker. Each nonblank line is a case-sensitive ECMAScript regular expression
+picker and informational badges. Each nonblank line is a case-sensitive ECMAScript regular expression
 searched against the **tag name**, independently of its hierarchy. Use `^` and `$`
 to match a complete name. Lines whose first non-space character is `#` are comments;
 other whitespace in expressions is preserved. For example:
@@ -194,7 +194,7 @@ other whitespace in expressions is preserved. For example:
 ^Workflow:
 ```
 
-Matching tags and all their descendants are hidden from the picker. A tag with
+Matching tags and all their descendants are hidden from the picker and all event/image badges. A tag with
 the same name in another, unexcluded branch remains selectable. All media remain accessible through
 the timeline, event galleries and folders; these rules do not filter media or
 disable existing JSON tag conditions. Expressions are loaded and compiled once

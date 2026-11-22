@@ -761,9 +761,9 @@ class TimelineTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(b'Invalid --timeline-gap-minutes', result.stdout+result.stderr)
 
-    def test_command_line_tag_exclusions_only_change_picker(self):
+    def test_command_line_tag_exclusions_hide_badges_without_filtering_media(self):
         rules = Path(self.temp.name)/'excluded-tags.txt'
-        rules.write_bytes(b"# Picker visibility only\r\n\r\n  # Comment\r\n^Aaron$\r\n^O'Brien\r\n")
+        rules.write_bytes(b"# Tag visibility only\r\n\r\n  # Comment\r\n^Aaron$\r\n^O'Brien\r\n")
         with self.filter_library():
             with sqlite_connection(self.database) as db:
                 db.execute('UPDATE Tags SET pid=9104 WHERE id=9101')
@@ -797,8 +797,20 @@ class TimelineTests(unittest.TestCase):
                 items = [item for event in feed['events']
                          for item in api(act='timeline_event', event=event['id'], filter=query)['items']]
                 self.assertEqual({item['name'] for item in items}, {'IMG_20300101-100000-a.jpg', 'b.jpg'})
-                self.assertTrue(all(any(tag['name'] == 'Aaron' for tag in item['tags']) for item in items))
-                self.assertTrue(all(any(tag['name'] == 'Aaron' for tag in event['tags']) for event in feed['events']))
+                visible = {9102}
+                for event in feed['events']:
+                    self.assertEqual({tag['id'] for tag in event['tags']}, visible)
+                    gallery = api(act='timeline_event', event=event['id'], filter=query)
+                    self.assertEqual({tag['id'] for tag in gallery['tags']}, visible)
+                    samples = api(act='timeline_samples', event=event['id'], filter=query)
+                    self.assertEqual({tag['id'] for tag in samples['tags']}, visible)
+                    for item in gallery['items'] + event['samples'] + samples['samples']:
+                        self.assertEqual({tag['id'] for tag in item['tags']}, visible)
+                # A file with only excluded tags stays visible with no badges.
+                plain = api(act='timeline')
+                all_items = [item for event in plain['events']
+                             for item in api(act='timeline_event', event=event['id'])['items']]
+                self.assertEqual(next(item for item in all_items if item['name'] == 'e.jpg')['tags'], [])
                 self.assertEqual(len(api(act='ls', path='/Filters')['items']), 5)
                 token = next(cookie.value for cookie in cookies if cookie.name == 'CSRFToken')
                 request = urllib.request.Request(url+'act=timeline_tags_refresh', method='POST', headers={'X-CSRFToken':token})

@@ -68,7 +68,7 @@ public:
         globalArguments->addCommandLineOption("HTTP Options", 0, "use-x-real-ip", "Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy)", "false", Abstract::Var::Type::BOOL);
 
         globalArguments->addCommandLineOption("Timeline Options", 0, "timeline-gap-minutes", "Inactivity in minutes that starts a new timeline group (positive integer)", "30", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("Timeline Options", 0, "tag-exclude-file", "Hide tag names from the picker using one case-sensitive ECMAScript regex per line", "", Abstract::Var::Type::STRING);
+        globalArguments->addCommandLineOption("Timeline Options", 0, "tag-exclude-file", "Hide tag names from the picker and badges using one case-sensitive ECMAScript regex per line", "", Abstract::Var::Type::STRING);
 
         globalArguments->addCommandLineOption("HTTP Security", 'p', "passfile", "HTTP User/Pass File", "", Abstract::Var::Type::STRING);
 
