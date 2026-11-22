@@ -14,6 +14,7 @@ inline std::string buildHTMLTimelineApp(const std::string &appTitle)
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+__PWA_HEAD__
 <title>Timeline · __APP_TITLE__</title>
 <style>
 __SHARED_CSS__
@@ -109,6 +110,7 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
  <header class="timeline-header app-header">
   <span class="brand">__APP_TITLE__</span>
   <div class="header-actions">
+   __PWA_INSTALL_BUTTON__
    <button class="btn" id="btnTimelineFilter" title="Filter timeline" aria-label="Timeline filters" aria-haspopup="dialog" aria-controls="timelineFilterDialog" aria-pressed="false"><i class="ic ic-filter"></i><span id="filterBadge" hidden></span></button>
    <button class="btn icon" id="btnRefreshTimeline" title="Refresh timeline" aria-label="Refresh timeline"><i class="ic ic-refresh"></i></button>
   </div>

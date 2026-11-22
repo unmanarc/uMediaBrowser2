@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include "pwa.h"
 #include <boost/algorithm/string/replace.hpp>
 #include <Mantids30/Core/Helpers/encoders.h>
 
@@ -667,6 +668,8 @@ async function thumbWorker(){
 }
 inline std::string buildHTMLPage(std::string html, const std::string &appTitle)
 {
+    boost::replace_all(html, "__PWA_HEAD__", PWA::HEAD);
+    boost::replace_all(html, "__PWA_INSTALL_BUTTON__", PWA::INSTALL_BUTTON);
     boost::replace_all(html, "__SHARED_CSS__", HTMLShared::SHARED_CSS);
     boost::replace_all(html, "__SHARED_ALBUM_HTML__", HTMLShared::SHARED_ALBUM_HTML);
     boost::replace_all(html, "__SHARED_DOM_JS__", HTMLShared::SHARED_DOM_JS);

@@ -2,6 +2,7 @@
 #include "html_errors.h"
 #include "html_index_app.h"
 #include "html_timeline_app.h"
+#include "pwa_icons.h"
 #include <Mantids30/Core/Helpers/random.h>
 #include <Mantids30/Runtime/Logs/loglevels.h>
 #include <Mantids30/Protocol/HTTP/rsp_status.h>
@@ -241,6 +242,26 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
         Mantids30::DataFormat::JSON::setMember(data, "uploaded", webClientParameters.uploadOK);
         writeJSON(webClientParameters.uploadOK, webClientParameters.uploadOK ? "" : "Upload not completed", data);
         return respond(HTTP::Status::Code::S_200_OK, clientRequest.getURI().c_str());
+    }
+
+    // Keep installation resources behind the same authentication as the UI.
+    if (method == "GET" && act == "pwa_manifest")
+    {
+        serverResponse.contentType = "application/manifest+json; charset=UTF-8";
+        serverResponse.cacheControl.optionNoStore = true;
+        getResponseContentStreamableObject()->writeString(PWA::manifest(webClientParameters.appTitle));
+        return respond(HTTP::Status::Code::S_200_OK, clientRequest.getURI());
+    }
+    if (method == "GET" && act == "pwa_icon")
+    {
+        const std::string size = HTTPVars_GET->getStringValue("size");
+        if (size != "192" && size != "512")
+            return respond(HTTP::Status::Code::S_404_NOT_FOUND, clientRequest.getURI());
+        serverResponse.contentType = "image/png";
+        const unsigned char *icon = size == "192" ? PWAIcons::icon192 : PWAIcons::icon512;
+        const size_t length = size == "192" ? sizeof(PWAIcons::icon192) : sizeof(PWAIcons::icon512);
+        getResponseContentStreamableObject()->writeString(std::string(reinterpret_cast<const char *>(icon), length));
+        return respond(HTTP::Status::Code::S_200_OK, clientRequest.getURI());
     }
 
     if (act == "ls")

@@ -13,6 +13,7 @@ inline std::string buildHTMLApp(const std::string &appTitle)
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+__PWA_HEAD__
 <title>__APP_TITLE__</title>
 <style>
 __SHARED_CSS__
@@ -24,6 +25,7 @@ __SHARED_CSS__
   <header id="zoneA" class="app-header">
     <span class="brand">__APP_TITLE__</span>
     <div class="header-actions">
+      __PWA_INSTALL_BUTTON__
       <button class="btn icon" id="btnFullscreen" title="Fullscreen"><i class="ic ic-fullscreen"></i></button>
     </div>
     <nav class="mode-switch" aria-label="Browse mode">

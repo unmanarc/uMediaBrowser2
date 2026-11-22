@@ -51,6 +51,29 @@ Lightweight web file explorer and media gallery that comes with:
 - Web file manager UI with [keyboard shortcuts](shortcuts.md)
 - Timeline with events spanning folders, progressive loading, and a shared media carousel
 
+### Install on Android (Chrome)
+
+Open the gallery in Chrome over **HTTPS with a certificate trusted by the phone**.
+In Chrome's menu choose **Add to Home screen → Install** (the wording depends on
+the Chrome version). This adds an icon and opens the gallery in its own window.
+The **Install** button in Folders and Timeline also opens the installation dialog
+when Chrome offers it; it stays hidden when installation is unavailable or the
+app is already running in standalone mode. Chrome may require some interaction
+and time on the page before offering the button.
+
+The app uses your `--title` as its installed name and includes Folders and Timeline
+app shortcuts. Installation still requires a connection to the server to browse
+media. No service worker or offline media cache is installed.
+
+Serve HTTPS using `--keyfile` and `--certfile`, or a TLS reverse proxy.
+An ordinary LAN URL such as `http://192.168.1.10:8001` does not meet Chrome's
+HTTPS installation requirements; Chrome may offer a browser shortcut instead.
+Installation assets retain the server's authentication requirements. If `APIKEY`
+is enabled, a proxy must supply the header for browser requests, including the
+manifest and icons; Chrome cannot supply a custom API-Key header itself.
+
+See [Chrome's installation criteria](https://web.dev/articles/install-criteria).
+
 ### API key authentication
 
 Set a non-empty `APIKEY` environment variable before starting the server to
@@ -376,6 +399,8 @@ require `convert` and `node` in addition to the built application:
 ```bash
 python3 tests/test_timeline.py build/timeline/uMediaBrowser2
 python3 tests/test_prefilter.py build/timeline/uMediaBrowser2
+python3 tests/test_api_key.py build/timeline/uMediaBrowser2
+python3 tests/test_pwa.py build/timeline/uMediaBrowser2
 ```
 
 Optional editor/browser tests require Python Playwright and Google Chrome
@@ -383,6 +408,7 @@ Optional editor/browser tests require Python Playwright and Google Chrome
 
 ```bash
 python3 tests/test_timeline_filters_ui.py build/timeline/uMediaBrowser2
+python3 tests/test_pwa_ui.py build/timeline/uMediaBrowser2
 ```
 
 ### Use Cases:

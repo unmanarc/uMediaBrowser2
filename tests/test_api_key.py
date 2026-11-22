@@ -17,7 +17,7 @@ KEY = 'test-api-secret'
 
 class APIKeyTests(unittest.TestCase):
     @contextmanager
-    def server(self, key, basic=False):
+    def server(self, key, basic=False, title=None):
         with tempfile.TemporaryDirectory(prefix='umedia-api-key-') as directory:
             self.root = Path(directory)
             with socket.socket() as sock:
@@ -29,6 +29,8 @@ class APIKeyTests(unittest.TestCase):
                 env['APIKEY'] = key
             args = [str(BINARY), '--rootdir', directory, '-a', '127.0.0.1',
                     '-l', str(self.port), '-u', '-s']
+            if title is not None:
+                args += ['--title', title]
             if basic:
                 password = self.root / 'password'
                 password.write_text('user\npassword\n')
@@ -74,7 +76,8 @@ class APIKeyTests(unittest.TestCase):
 
     def test_required_for_pages_actions_and_static_paths(self):
         with self.server(KEY) as log:
-            for path in ('/', '/?view=timeline', '/?act=ls', '/favicon.ico', '/?act=download&path=/missing'):
+            for path in ('/', '/?view=timeline', '/?act=ls', '/favicon.ico', '/?act=download&path=/missing',
+                         '/?act=pwa_manifest', '/?act=pwa_icon&size=192', '/?act=pwa_icon&size=512'):
                 for headers in ({}, {'API-Key': ''}, {'API-Key': 'wrong'}, {'API-Key': KEY.upper()}):
                     with self.subTest(path=path, headers=headers):
                         self.assertEqual(self.request(path, headers)[0], 401)
