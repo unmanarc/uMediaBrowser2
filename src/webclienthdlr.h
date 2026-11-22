@@ -30,6 +30,7 @@ struct webClientParams
     std::string httpDocumentRootDir;
     Mantids30::Runtime::Logs::RPCLog * rpcLog;
     std::string user,pass;
+    std::string apiKey; ///< Required API-Key header when APIKEY is non-empty at startup.
 
     std::string uploadDirBase;
     std::string remoteIP;
@@ -92,6 +93,7 @@ private:
 
     void createCSRFTokenCookie();
     bool checkCSRFTokenOnPOST();
+    bool checkAPIKey() const;
 
     std::string getFancySize(size_t  size);
 

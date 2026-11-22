@@ -9,6 +9,7 @@
 #include <Mantids30/Network/Sockets/acceptor_multithreaded.h>
 
 #include <charconv>
+#include <cstdlib>
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -109,6 +110,9 @@ public:
         webClientParameters.rpcLog->setDebug(debugMode);
 
         std::string passFile = globalArguments->getCommandLineOptionValue("passfile")->toString();
+
+        if (const char *apiKey = std::getenv("APIKEY"))
+            webClientParameters.apiKey = apiKey;
 
         if (!passFile.empty())
         {
@@ -256,6 +260,8 @@ public:
         log->log0(__func__, Logs::INFO, "Auth: %s | Debug logging: %s",
                   webClientParameters.pass.empty() ? "disabled" : "basic",
                   webClientParameters.debug ? "enabled" : "disabled");
+        if (!webClientParameters.apiKey.empty())
+            log->log0(__func__, Logs::INFO, "API Key authentication enabled (API-Key header required).");
 
         return 0;
     }

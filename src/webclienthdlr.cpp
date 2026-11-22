@@ -33,6 +33,12 @@ WebClientHdlr::WebClientHdlr(const std::shared_ptr<StreamableObject> &sock)
 
 WebClientHdlr::~WebClientHdlr() {}
 
+bool WebClientHdlr::checkAPIKey() const
+{
+    return webClientParameters.apiKey.empty() ||
+           clientRequest.headers.getOptionRawStringByName("API-Key") == webClientParameters.apiKey;
+}
+
 bool WebClientHdlr::checkCSRFTokenOnPOST()
 {
     if (clientRequest.requestLine.getHTTPMethod() == "POST")
@@ -66,7 +72,8 @@ bool WebClientHdlr::onHTTPClientHeadersReceived()
     if (clientRequest.content.getContainerType() == Content::ContainerType::MIME)
         clientRequest.content.getMultiPartVars()->setCallbackOnHeaderReady(MIME::MIME_Message::MIMECallback());
 
-    if (!checkCSRFTokenOnPOST())
+    // Leave upload callbacks disabled until the API key has been validated.
+    if (!checkAPIKey() || !checkCSRFTokenOnPOST())
         return true;
 
     auto httpVars_GET = clientRequest.getVarsBySource(HTTP::Source::GET);
@@ -181,6 +188,13 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
     HTTP::Status::Code ret = HTTP::Status::Code::S_404_NOT_FOUND;
 
     reqStart = std::chrono::steady_clock::now();
+
+    if (!checkAPIKey())
+    {
+        logRpc(Logs::ERROR, "R/API-KEY-AUTH-FAIL: method=%s", clientRequest.requestLine.getHTTPMethod().c_str());
+        getResponseContentStreamableObject()->writeString(HTML_401);
+        return respond(HTTP::Status::Code::S_401_UNAUTHORIZED, clientRequest.getURI());
+    }
 
     if (!checkCSRFTokenOnPOST())
         return HTTP::Status::Code::S_401_UNAUTHORIZED;

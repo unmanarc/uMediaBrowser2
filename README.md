@@ -51,6 +51,19 @@ Lightweight web file explorer and media gallery that comes with:
 - Web file manager UI with [keyboard shortcuts](shortcuts.md)
 - Timeline with events spanning folders, progressive loading, and a shared media carousel
 
+### API key authentication
+
+Set a non-empty `APIKEY` environment variable before starting the server to
+require the exact same value in the `API-Key` header on every request.
+Missing or incorrect keys return HTTP 401. An unset or empty `APIKEY` disables
+this requirement. If `--passfile` is also configured, both credentials are required.
+Startup logs announce API key authentication without printing the key.
+
+```bash
+APIKEY='your-secret-key' ./build/timeline/uMediaBrowser2 --rootdir /path/to/media
+curl -H 'API-Key: your-secret-key' 'http://localhost:8001/?act=ls'
+```
+
 ### Timeline
 
 Use the **Timeline** button in the folder browser, or open `/?view=timeline`.
