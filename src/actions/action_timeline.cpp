@@ -20,12 +20,21 @@ bool number(const std::string &text, size_t &out, size_t fallback)
     try { out = std::stoull(text); return true; } catch (...) { return false; }
 }
 
+/** @brief Informational badges expose identity, short label and full ancestry. */
+boost::json::array tagJSON(const std::vector<TimelineDatabase::Tag> &tags)
+{
+    boost::json::array result;
+    for (const auto &tag : tags)
+        result.push_back(boost::json::object{{"id", tag.id}, {"name", tag.name}, {"path", tag.path}});
+    return result;
+}
+
 /** @brief Serialize one existing file and its event-wide carousel position. */
 boost::json::object mediaJSON(const TimelineDatabase::Media &item)
 {
     return {{"path", item.path}, {"folder", item.folder}, {"name", std::filesystem::path(item.path).filename().string()},
             {"type", "file"}, {"timestamp", item.timestamp}, {"mtime", item.mtime}, {"size", item.size},
-            {"date_source", item.dateSource}, {"index", item.index}};
+            {"date_source", item.dateSource}, {"index", item.index}, {"tags", tagJSON(item.tags)}};
 }
 
 /** @brief Serialize a bounded page or sample list. */
@@ -39,7 +48,7 @@ boost::json::array mediaJSON(const std::vector<TimelineDatabase::Media> &items)
 /** @brief Serialize event metadata independently of its optional samples. */
 boost::json::object eventJSON(const TimelineDatabase::Event &event)
 {
-    return {{"id", event.id}, {"start", event.start}, {"end", event.end}, {"count", event.count}};
+    return {{"id", event.id}, {"start", event.start}, {"end", event.end}, {"count", event.count}, {"tags", tagJSON(event.tags)}};
 }
 }
 
