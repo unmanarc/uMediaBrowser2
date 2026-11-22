@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <stdexcept>
@@ -23,7 +24,8 @@ namespace Mantids30::Runtime::Logs { class AppLog; }
  * Each operation opens the nearest ancestor digikam4.db in SQLite mode=ro and
  * holds a read transaction for that request. SQL orders and filters the rows;
  * the application retains only the requested page and at most six samples per
- * returned event. A separate SQLite memory snapshot stores existing paths for
+ * returned event. Verified collection relocations are inferred at startup from
+ * rootdir and indexed files, and applied in memory to every request. A separate SQLite memory snapshot stores existing paths for
  * the tag picker, built at startup and replaced only by an explicit rescan.
  *
  * Existing-file counts and configured event boundaries require streaming the
@@ -214,6 +216,7 @@ private:
     class Reader; ///< Owns one read-only connection, transaction and streaming queries.
     struct FileSnapshot; ///< Keeps a named SQLite memory database alive.
     std::string root; ///< Canonical HTTP root used to constrain every query.
+    std::map<std::string, std::string> collectionOverrides; ///< Validated startup relocations; never written to digiKam.
     int64_t gap; ///< Event gap in seconds, always positive.
     std::atomic<uint64_t> generation; ///< Revision seed; never contains database rows.
     mutable std::mutex snapshotMutex; ///< Protects snapshot publication only.

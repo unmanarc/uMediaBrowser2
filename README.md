@@ -84,6 +84,18 @@ built with URI support (`USE_URI`). The database is never created or modified.
 `--rootdir` enter the timeline. Collection identifiers with `path=` (including
 percent-encoded paths) and absolute `specificPath` values are supported.
 
+At startup, moved collections are adapted automatically **in memory**. For
+example, `/home/users/name/Albums` can become `/home/albums/Albums` when
+`--rootdir` points there or into one of its subfolders. Detection aligns shared
+directory names, preserves album-relative paths, and probes up to 64 indexed
+files per candidate inside the served root. It accepts only one verified local
+location; ambiguous matches, duplicate target collections and candidates without
+an existing indexed file are rejected and logged. Collection names must retain
+a shared directory component; arbitrary renames are not guessed. Startup logs
+show the selected database, accepted old/new paths, and unresolved collections.
+The mapping lasts until restart and applies to timeline, tags, metadata pickers
+and mandatory folder filters. The digiKam database is never rewritten.
+
 Timeline dates use the first valid source in this order:
 
 1. A capture date embedded in an `IMG` filename, such as

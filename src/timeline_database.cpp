@@ -159,6 +159,116 @@ void checkQuery(const std::shared_ptr<Query> &query, bool finished = false)
                     (query ? query->getLastSQLError() : "query unavailable"));
 }
 
+/** @brief Infer relocations by shared directory names, accepting only a unique
+ * candidate with an indexed regular file beneath rootdir. Work is bounded to
+ * 64 file probes per candidate; ambiguous or unverified paths stay unchanged.
+ */
+std::map<std::string, std::string> relocatedCollections(const std::string &root,
+                                                      Mantids30::Runtime::Logs::AppLog *logger)
+{
+    using namespace Mantids30::Runtime::Logs;
+    std::map<std::string, std::string> result;
+    const auto database = findDatabase(root);
+    if (logger) logger->log0("timeline", INFO, "Collection path detection: root=%s database=%s",
+                            root.c_str(), database.empty() ? "not found" : database.c_str());
+    if (database.empty()) return result;
+    SQLConnector_SQLite3 connection;
+    connection.setThrowCPPErrorOnQueryFailure(false);
+    if (!sqlite3_compileoption_used("USE_URI") ||
+        !connection.connect("file:" + uriEncode(database.string()) + "?mode=ro") || !connection.qExecuteEx("BEGIN"))
+        throw Error(ErrorKind::Unavailable, "Cannot open digiKam database for collection path detection.");
+    std::set<std::string> nativePaths;
+    std::vector<std::pair<std::string, std::string>> storedRoots;
+    {
+        STRING identifier, specific;
+        auto roots = connection.qSelect("SELECT identifier,specificPath FROM AlbumRoots", {}, {&identifier, &specific});
+        checkQuery(roots);
+        while (roots->step())
+            if (!roots->isNull(0) && !roots->isNull(1))
+                storedRoots.emplace_back(identifier.getValue(), specific.getValue());
+        checkQuery(roots, true);
+    } // Release the connector's active query before probing files.
+    for (const auto &stored : storedRoots)
+    {
+        const auto original = collectionPath(stored.first, stored.second);
+        if (original.empty()) continue;
+        if (inside(root, original) || inside(original, root))
+        {
+            nativePaths.insert(original.string());
+            continue;
+        }
+        std::set<fs::path> candidates, verified;
+        // Align equal path components, keeping the collection suffix intact.
+        // This covers both a served collection and a served subtree of it.
+        for (auto oldAnchor = original; oldAnchor != oldAnchor.root_path(); oldAnchor = oldAnchor.parent_path())
+            for (auto newAnchor = fs::path(root); newAnchor != newAnchor.root_path(); newAnchor = newAnchor.parent_path())
+                if (oldAnchor.filename() == newAnchor.filename())
+                {
+                    const auto suffix = original.lexically_relative(oldAnchor);
+                    const auto candidate = normalized(newAnchor / suffix);
+                    if (inside(root, candidate) || inside(candidate, root)) candidates.insert(candidate);
+                }
+        for (const auto &candidate : candidates)
+        {
+            STRING folder, name;
+            auto files = connection.qSelect(R"SQL(
+                WITH folders AS (
+                    SELECT id, CASE WHEN trim(relativePath,'/')='' THEN :collection
+                        ELSE rtrim(:collection,'/') || '/' || trim(relativePath,'/') END AS folder
+                    FROM Albums WHERE albumRoot IN (
+                        SELECT id FROM AlbumRoots WHERE identifier=:identifier AND specificPath=:specific)
+                    AND relativePath IS NOT NULL
+                    AND instr('/' || trim(relativePath,'/') || '/', '/../')=0
+                    AND instr('/' || trim(relativePath,'/') || '/', '/./')=0
+                )
+                SELECT a.folder,i.name FROM folders a JOIN Images i ON i.album=a.id
+                WHERE (a.folder=:root OR substr(a.folder,1,length(:prefix))=:prefix)
+                    AND i.name IS NOT NULL AND i.name NOT IN ('','.','..')
+                    AND instr(i.name,'/')=0 AND instr(i.name,char(0))=0
+                LIMIT 64
+            )SQL", {{":collection", std::make_shared<STRING>(candidate.string())},
+                     {":identifier", std::make_shared<STRING>(stored.first)},
+                     {":specific", std::make_shared<STRING>(stored.second)},
+                     {":root", std::make_shared<STRING>(root)},
+                     {":prefix", std::make_shared<STRING>(root == "/" ? "/" : root + "/")}}, {&folder, &name});
+            checkQuery(files);
+            while (files->step())
+            {
+                std::error_code ec;
+                const fs::path directory(folder.getValue());
+                if (fs::canonical(directory, ec) != directory || ec) continue;
+                if (fs::is_regular_file(fs::symlink_status(directory / name.getValue(), ec)) && !ec)
+                    verified.insert(candidate);
+            }
+            checkQuery(files, true);
+        }
+        if (verified.size() == 1) result[original.string()] = verified.begin()->string();
+        else if (logger) logger->log0("timeline", WARNING,
+            "Collection path unresolved: stored=%s root=%s candidates=%zu verified=%zu (need one unique match)",
+            original.c_str(), root.c_str(), candidates.size(), verified.size());
+    }
+    // Never merge two unrelated stored collections into the same local path.
+    std::map<std::string, size_t> targets;
+    for (const auto &path : nativePaths) ++targets[path];
+    for (const auto &entry : result) ++targets[entry.second];
+    for (auto entry = result.begin(); entry != result.end();)
+    {
+        if (targets[entry->second] > 1)
+        {
+            if (logger) logger->log0("timeline", WARNING, "Ambiguous collection relocation rejected: stored=%s local=%s",
+                                    entry->first.c_str(), entry->second.c_str());
+            entry = result.erase(entry);
+        }
+        else
+        {
+            if (logger) logger->log0("timeline", INFO, "Collection path adapted in memory: stored=%s local=%s",
+                                    entry->first.c_str(), entry->second.c_str());
+            ++entry;
+        }
+    }
+    return result;
+}
+
 /** @brief Build SQLite's equivalent of the observed IMG filename regexes.
  *
  * Regexes (case-insensitive, anchored at the beginning):
@@ -235,13 +345,14 @@ public:
      * @param version Revision counter captured by the calling API method.
      * @param filter Validated conditions included in SQL scope and revision identity.
      * @param exclusions Rules hiding tag names and their descendants from all tag output.
+     * @param overrides Verified startup collection relocations.
      * @param uriPath Optional validated file/folder path narrowing SQL before streaming.
      * @param singleFile Select an exact file instead of a folder subtree.
      * @throws Error If discovery, connection, schema access or URI support fails.
      */
     Reader(const std::string &root, uint64_t version, const TimelineFilter &filter, const std::vector<std::regex> &exclusions,
-           const std::string &uriPath = "", bool singleFile = false)
-        : exclusions(exclusions), root(root), database(findDatabase(root))
+           const std::map<std::string, std::string> &overrides, const std::string &uriPath = "", bool singleFile = false)
+        : overrides(overrides), exclusions(exclusions), root(root), database(findDatabase(root))
     {
         if (database.empty()) throw Error(ErrorKind::Unavailable, "No digikam4.db found in --rootdir or its ancestors.");
         if (!sqlite3_compileoption_used("USE_URI"))
@@ -757,7 +868,9 @@ private:
             while (query->step())
             {
                 if (query->isNull(1) || query->isNull(2)) continue;
-                const auto collection = collectionPath(identifier.getValue(), specific.getValue());
+                auto collection = collectionPath(identifier.getValue(), specific.getValue());
+                const auto relocated = overrides.find(collection.string());
+                if (relocated != overrides.end()) collection = relocated->second;
                 if (collection.empty() || (!inside(root, collection) && !inside(collection, root))) continue;
                 const std::string key = std::to_string(index++);
                 if (!collections.empty()) collections += ',';
@@ -861,6 +974,7 @@ private:
         return known->second && fs::is_regular_file(fs::symlink_status(file, ec)) && !ec;
     }
 
+    const std::map<std::string, std::string> &overrides; ///< Immutable startup path corrections.
     const std::vector<std::regex> &exclusions; ///< Shared visibility rules for all tag output.
     std::map<int64_t, Tag> mediaTags; ///< Request-local public names/paths, shared by displayed events.
     bool mediaTagsLoaded = false;
@@ -879,6 +993,12 @@ TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds, Mantids
       generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())), logger(logger),
       tagExclusions(std::move(tagExclusions)), prefilter(std::move(prefilter))
 {
+    try { collectionOverrides = relocatedCollections(this->root, logger); }
+    catch (const Error &error)
+    {
+        if (logger) logger->log0("timeline", Mantids30::Runtime::Logs::WARNING,
+            "Collection path detection unavailable: %s", error.what());
+    }
     rescanTagFiles();
 }
 
@@ -932,7 +1052,7 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
         std::lock_guard<std::mutex> lock(snapshotMutex);
         snapshot = fileSnapshot;
     }
-    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, collectionOverrides);
     auto result = reader.readTags(snapshot->uri);
     reader.verify();
     return result;
@@ -945,7 +1065,7 @@ TimelineDatabase::TagIcon TimelineDatabase::tagIcon(int64_t id) const
         std::lock_guard<std::mutex> lock(snapshotMutex);
         snapshot = fileSnapshot;
     }
-    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, collectionOverrides);
     auto result = reader.readTagIcon(id, snapshot->uri);
     reader.verify();
     return result;
@@ -958,7 +1078,7 @@ boost::json::object TimelineDatabase::filterValues() const
         std::lock_guard<std::mutex> lock(snapshotMutex);
         snapshot = fileSnapshot;
     }
-    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, collectionOverrides);
     auto result = reader.readFilterValues(snapshot->uri);
     reader.verify();
     return result;
@@ -966,7 +1086,7 @@ boost::json::object TimelineDatabase::filterValues() const
 
 TimelineDatabase::FolderView TimelineDatabase::folders(const std::string &path) const
 {
-    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, path.empty() ? "/" : path);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, collectionOverrides, path.empty() ? "/" : path);
     FolderView result;
     reader.walkPaths([&](const std::string &file) {
         result.files.insert(file);
@@ -982,7 +1102,7 @@ TimelineDatabase::FolderView TimelineDatabase::folders(const std::string &path) 
 
 bool TimelineDatabase::allowsFile(const std::string &path) const
 {
-    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, path, true);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, collectionOverrides, path, true);
     bool allowed = false;
     reader.walkPaths([&](const std::string &) { allowed = true; });
     reader.verify();
@@ -996,7 +1116,7 @@ TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, c
     const auto version = generation.load();
     try
     {
-        Reader reader(root, version, effectiveFilter(filter), tagExclusions);
+        Reader reader(root, version, effectiveFilter(filter), tagExclusions, collectionOverrides);
         reader.requireRevision(revision);
         auto page = reader.readFeed(cursor, limit, gap, ascending);
         reader.verify();
@@ -1017,7 +1137,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 {
     if (!limit || limit > 60) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     const auto version = generation.load();
-    Reader reader(root, version, effectiveFilter(filter), tagExclusions);
+    Reader reader(root, version, effectiveFilter(filter), tagExclusions, collectionOverrides);
     auto page = reader.readEvent(reader.decodeEvent(id), cursor, limit, false);
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
@@ -1027,7 +1147,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 TimelineDatabase::Event TimelineDatabase::samples(const std::string &id, const TimelineFilter &filter) const
 {
     const auto version = generation.load();
-    Reader reader(root, version, effectiveFilter(filter), tagExclusions);
+    Reader reader(root, version, effectiveFilter(filter), tagExclusions, collectionOverrides);
     auto event = reader.readEvent(reader.decodeEvent(id), 0, 0, true).event;
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");

@@ -1072,6 +1072,73 @@ class TimelineTests(unittest.TestCase):
                 db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Tags')")
             self.refresh('timeline_tags_refresh')
 
+    def test_collection_relocation_at_startup(self):
+        baseline = self.api(act='timeline')['total_items']
+        with sqlite_connection(self.database) as db:
+            original = db.execute('SELECT identifier,specificPath FROM AlbumRoots WHERE id=1').fetchone()
+            other = db.execute('SELECT identifier,specificPath FROM AlbumRoots WHERE id=2').fetchone()
+        old = '/old machine/Pictures/' + self.library.name
+        cases = [
+            # Encoded identifiers and absolute specificPath both relocate.
+            (self.root, 'volumeid:?path=' + urllib.parse.quote(old, safe='/'), '/', True, False),
+            (self.library, 'volumeid:?uuid=old-disk', old, True, False),
+            # No shared directory names: do not guess from filenames alone.
+            (self.root, 'volumeid:?path=/unrelated/collection', '/', False, False),
+            # Both stored collections would resolve to the same local directory.
+            (self.library, 'volumeid:?uuid=old-disk', old, False, True),
+        ]
+        try:
+            for root, identifier, specific, relocated, duplicate in cases:
+                with self.subTest(root=root, identifier=identifier):
+                    with sqlite_connection(self.database) as db:
+                        db.execute('UPDATE AlbumRoots SET identifier=?,specificPath=? WHERE id=1', (identifier, specific))
+                        db.execute('UPDATE AlbumRoots SET identifier=?,specificPath=? WHERE id=2',
+                                   ('volumeid:?uuid=another-disk', '/another/' + self.library.name) if duplicate else other)
+                    before = self.database.read_bytes()
+                    with socket.socket() as sock:
+                        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+                    with tempfile.TemporaryFile(mode='w+') as log:
+                        process = subprocess.Popen([str(BINARY), '--rootdir', str(root), '-a', '127.0.0.1', '-l', str(port)],
+                                                   stdout=log, stderr=log, env=dict(os.environ, TZ='UTC'))
+                        try:
+                            url = f'http://127.0.0.1:{port}/?'
+                            for _ in range(200):
+                                if process.poll() is not None: self.fail('Relocation server failed to start')
+                                try:
+                                    with urllib.request.urlopen(url + 'act=timeline', timeout=2) as response:
+                                        page = json.load(response)['data']
+                                    break
+                                except OSError: time.sleep(.025)
+                            else: self.fail('Relocation server did not start')
+                            self.assertTrue(page['database_available'])
+                            self.assertEqual(page['error'], '')
+                            if relocated:
+                                log.seek(0)
+                                self.assertGreaterEqual(page['total_items'], baseline, log.read())
+                                if root == self.root: self.assertEqual(page['total_items'], baseline)
+                                with urllib.request.urlopen(url + 'act=timeline_tags') as response:
+                                    self.assertIsInstance(json.load(response)['data']['tags'], list)
+                                event = page['events'][0]
+                                with urllib.request.urlopen(url + urllib.parse.urlencode(dict(act='timeline_event', event=event['id']))) as response:
+                                    items = json.load(response)['data']['items']
+                                self.assertTrue(items)
+                                self.assertTrue(all((root / item['path'].lstrip('/')).is_file() for item in items))
+                            else:
+                                self.assertEqual(page['total_items'], 0)
+                            self.assertEqual(self.database.read_bytes(), before)
+                        finally:
+                            process.terminate()
+                            try: process.wait(timeout=5)
+                            except subprocess.TimeoutExpired: process.kill(); process.wait()
+                        log.seek(0)
+                        expected_log = 'Collection path adapted in memory' if relocated else (
+                            'Ambiguous collection relocation rejected' if duplicate else 'Collection path unresolved')
+                        self.assertIn(expected_log, log.read())
+        finally:
+            with sqlite_connection(self.database) as db:
+                db.execute('UPDATE AlbumRoots SET identifier=?,specificPath=? WHERE id=1', original)
+                db.execute('UPDATE AlbumRoots SET identifier=?,specificPath=? WHERE id=2', other)
+
     def test_wal_commits_are_visible_and_read_only(self):
         writer = sqlite3.connect(self.database)
         photo = None
