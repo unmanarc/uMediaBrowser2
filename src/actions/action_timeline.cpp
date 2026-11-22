@@ -59,7 +59,8 @@ Status::Code WebClientHdlr::action_timeline()
         return respond(code, clientRequest.getURI());
     };
     const bool refresh = act == "timeline_refresh";
-    if (clientRequest.requestLine.getHTTPMethod() != (refresh ? "POST" : "GET"))
+    const bool rescan = act == "timeline_tags_refresh";
+    if (clientRequest.requestLine.getHTTPMethod() != (refresh || rescan ? "POST" : "GET"))
         return finish(Status::Code::S_405_METHOD_NOT_ALLOWED, "Method not allowed");
     if (!webClientParameters.timeline)
         return finish(Status::Code::S_503_SERVICE_UNAVAILABLE, "Timeline database unavailable");
@@ -72,6 +73,18 @@ Status::Code WebClientHdlr::action_timeline()
     {
         const auto filter = TimelineFilter::parse(vars->getStringValue("filter"));
         auto &database = *webClientParameters.timeline;
+        if (act == "timeline_tags" || rescan)
+        {
+            size_t scanned = 0;
+            if (rescan) scanned = database.rescanTagFiles();
+            boost::json::array tags;
+            for (const auto &tag : database.tags())
+                tags.push_back(boost::json::object{{"id", tag.id}, {"parent_id", tag.parent},
+                    {"name", tag.name}, {"path", tag.path}, {"count", tag.count}});
+            boost::json::object result{{"tags", std::move(tags)}};
+            if (rescan) result["scanned_files"] = scanned;
+            return finish(Status::Code::S_200_OK, "", result);
+        }
         if (refresh) database.invalidate();
         if (act == "timeline" || refresh)
         {

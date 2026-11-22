@@ -2,6 +2,7 @@
  *  @brief Streaming implementation of the read-only timeline database layer.
  */
 #include "timeline_database.h"
+#include <Mantids30/Runtime/Logs/applog.h>
 #include <Mantids30/DB/SQLite3/sqlconnector_sqlite3.h>
 #include <Mantids30/Core/Memory/a_int64.h>
 #include <Mantids30/Core/Memory/a_string.h>
@@ -18,6 +19,7 @@
 #include <random>
 #include <sys/stat.h>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fs = std::filesystem;
 using Mantids30::DB::SQLite3::SQLConnector_SQLite3;
@@ -213,6 +215,13 @@ int64_t bound(const std::string &text)
 }
 }
 
+/** @brief Named memory database kept alive while any tag reader uses it. */
+struct TimelineDatabase::FileSnapshot
+{
+    SQLConnector_SQLite3 connection;
+    std::string uri;
+};
+
 /** @brief Request-local connection and SQL cursor implementation.
  * No Reader survives its API call. The folder validation map caches only
  * canonical-directory checks during that call, never Images records.
@@ -405,6 +414,64 @@ public:
 
     std::string revision; ///< Token for the currently open database transaction.
 
+    /** @brief Join the current digiKam rows to an immutable existing-path table.
+     * Ancestors provide labels only; a parent without assigned files is not an
+     * option. Missing dates do not disqualify a file from the tag catalog.
+     */
+    std::vector<Tag> readTags(const std::string &memoryURI)
+    {
+        checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
+        // digiKam marks technical tags with TagProperties.internalTag. Older
+        // databases can also identify them through the reserved internal branch.
+        std::unordered_set<int64_t> internalTags;
+        if (connection.dbTableExist("TagProperties"))
+        {
+            INT64 tagId;
+            auto query = connection.qSelect("SELECT tagid FROM TagProperties WHERE property='internalTag'", {}, {&tagId});
+            checkQuery(query);
+            while (query->step()) internalTags.insert(tagId.getValue());
+            checkQuery(query, true);
+        }
+        std::map<int64_t, Tag> hierarchy;
+        INT64 id, parent, count;
+        STRING name;
+        {
+            auto query = connection.qSelect("SELECT id, COALESCE(pid,0), COALESCE(name,'') FROM Tags", {}, {&id, &parent, &name});
+            checkQuery(query);
+            while (query->step()) hierarchy.emplace(id.getValue(), Tag{id.getValue(), parent.getValue(), name.getValue(), {}, 0});
+            checkQuery(query, true);
+        }
+        std::vector<Tag> result;
+        auto query = connection.qSelect(scope + R"SQL(
+            SELECT t.id, COALESCE(t.pid,0), t.name, count(DISTINCT i.imageid)
+            FROM image_dates i JOIN mem.existing_files f ON f.path=i.path
+            JOIN ImageTags it ON it.imageid=i.imageid JOIN Tags t ON t.id=it.tagid
+            WHERE trim(COALESCE(t.name,''), char(9)||char(10)||char(13)||' ')<>''
+            GROUP BY t.id, t.pid, t.name
+        )SQL", bindings, {&id, &parent, &name, &count});
+        checkQuery(query);
+        while (query->step())
+        {
+            Tag tag{id.getValue(), parent.getValue(), name.getValue(), name.getValue(), static_cast<size_t>(count.getValue())};
+            bool internal = internalTags.count(tag.id) || tag.name == "_Digikam_Internal_Tags_" || tag.name == "_Digikam_root_tag_";
+            std::unordered_set<int64_t> seen{tag.id};
+            auto ancestor = hierarchy.find(tag.parent);
+            while (ancestor != hierarchy.end() && ancestor->first != 0 && seen.insert(ancestor->first).second)
+            {
+                internal = internal || internalTags.count(ancestor->first) || ancestor->second.name == "_Digikam_Internal_Tags_";
+                if (!ancestor->second.name.empty() && ancestor->second.name != "_Digikam_root_tag_")
+                    tag.path = ancestor->second.name + " / " + tag.path;
+                ancestor = hierarchy.find(ancestor->second.parent);
+            }
+            if (!internal) result.push_back(std::move(tag));
+        }
+        checkQuery(query, true);
+        std::sort(result.begin(), result.end(), [](const Tag &a, const Tag &b) {
+            return a.path == b.path ? a.id < b.id : a.path < b.path;
+        });
+        return result;
+    }
+
 private:
     /** @brief Compile validated rules into parameterized SQL over Images i/info.
      * EXISTS keeps tag/metadata comparisons independent and avoids duplicate media
@@ -516,7 +583,7 @@ private:
                   AND instr('/' || trim(a.relativePath,'/') || '/', '/../')=0
                   AND instr('/' || trim(a.relativePath,'/') || '/', '/./')=0
             ), image_dates AS (
-                SELECT a.folder || CASE WHEN a.folder='/' THEN '' ELSE '/' END || i.name AS path, a.folder,
+                SELECT i.id AS imageid, a.folder || CASE WHEN a.folder='/' THEN '' ELSE '/' END || i.name AS path, a.folder,
                     i.modificationDate AS modification_date, info.creationDate AS creation_date,
         )SQL" + filenameDateSQL() + R"SQL( AS filename_date, COALESCE(i.fileSize,0) AS size
                 FROM Images i JOIN album_paths a ON a.id=i.album
@@ -578,9 +645,68 @@ private:
     std::unordered_map<std::string, bool> directories; ///< Request-local directory validation results.
 };
 
-TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds)
+TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds, Mantids30::Runtime::Logs::AppLog *logger)
     : root(fs::canonical(root).string()), gap(std::max<int64_t>(1, gapSeconds)),
-      generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())) {}
+      generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())), logger(logger)
+{
+    rescanTagFiles();
+}
+
+size_t TimelineDatabase::rescanTagFiles()
+{
+    std::lock_guard<std::mutex> scanLock(scanMutex);
+    const auto started = std::chrono::steady_clock::now();
+    if (logger) logger->log0("timeline", Mantids30::Runtime::Logs::INFO,
+        "Tag file scan started: root=%s", root.c_str());
+    static std::atomic<uint64_t> serial{0};
+    auto next = std::make_shared<FileSnapshot>();
+    next->uri = "file:umedia-tag-files-" + std::to_string(serial.fetch_add(1)) + "?mode=memory&cache=shared";
+    auto &connection = next->connection;
+    connection.setThrowCPPErrorOnQueryFailure(false);
+    if (!sqlite3_compileoption_used("USE_URI") || !connection.connect(next->uri))
+        throw Error(ErrorKind::Unavailable, "Cannot create the tag selector's memory database.");
+    checkQuery(connection.qExecute("CREATE TABLE existing_files(path TEXT PRIMARY KEY) WITHOUT ROWID"));
+    checkQuery(connection.qExecute("BEGIN"));
+    size_t count = 0;
+    try
+    {
+        // Do not follow directory symlinks; symlink files are excluded as well,
+        // matching the timeline's containment rules. Store paths, never media metadata.
+        for (const auto &entry : fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied))
+        {
+            if (!fs::is_regular_file(entry.symlink_status())) continue;
+            checkQuery(connection.qExecute("INSERT INTO existing_files(path) VALUES(:path)",
+                {{":path", std::make_shared<STRING>(entry.path().string())}}));
+            ++count;
+        }
+    }
+    catch (const fs::filesystem_error &error)
+    {
+        throw Error(ErrorKind::Unavailable, "Gallery scan failed: " + std::string(error.what()));
+    }
+    checkQuery(connection.qExecute("COMMIT"));
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        fileSnapshot = std::move(next);
+    }
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (logger) logger->log0("timeline", Mantids30::Runtime::Logs::INFO,
+        "Tag file scan finished: root=%s files=%zu elapsed=%.3f seconds", root.c_str(), count, elapsed);
+    return count;
+}
+
+std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
+{
+    std::shared_ptr<FileSnapshot> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        snapshot = fileSnapshot;
+    }
+    Reader reader(root, generation.load(), {});
+    auto result = reader.readTags(snapshot->uri);
+    reader.verify();
+    return result;
+}
 
 TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision, const TimelineFilter &filter) const
 {

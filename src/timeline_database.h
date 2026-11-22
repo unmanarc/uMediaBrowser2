@@ -6,17 +6,22 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include "timeline_filter.h"
+
+namespace Mantids30::Runtime::Logs { class AppLog; }
 
 /** @brief Provides timeline pages directly from digiKam through libMantids30.
  *
  * Each operation opens the nearest ancestor digikam4.db in SQLite mode=ro and
  * holds a read transaction for that request. SQL orders and filters the rows;
  * the application retains only the requested page and at most six samples per
- * returned event. There is no startup scan, media index or snapshot cache.
+ * returned event. A separate SQLite memory snapshot stores existing paths for
+ * the tag picker, built at startup and replaced only by an explicit rescan.
  *
  * Existing-file counts and configured event boundaries require streaming the
  * matching rows and checking their files. This uses bounded application memory,
@@ -32,7 +37,7 @@
  * so every event/gallery/sample request must repeat the same JSON conditions.
  *
  * @note Instances can be shared by HTTP workers: connections and query state
- *       belong to individual requests. Only the revision counter is shared.
+ *       belong to individual requests. Path snapshots are immutable and shared.
  */
 class TimelineDatabase
 {
@@ -94,12 +99,33 @@ public:
         bool hasMore = false; ///< Whether additional existing files follow.
     };
 
-    /** @brief Configure database access without reading or indexing any media.
+    /** @brief Selectable nonempty tag assigned to files in the path snapshot. */
+    struct Tag
+    {
+        int64_t id = 0;
+        int64_t parent = 0;
+        std::string name; ///< Exact name used by the existing tag filter contract.
+        std::string path; ///< Ancestor names for distinguishing tag branches.
+        size_t count = 0; ///< Distinct matching files in this tag branch.
+    };
+
+    /** @brief Query tags through SQL joins, without filesystem existence checks. */
+    std::vector<Tag> tags() const;
+
+    /** @brief Rebuild existing paths, publishing atomically after a successful scan.
+     * Existing readers keep the previous snapshot. Errors preserve that snapshot.
+     * @return Number of regular files scanned under rootdir (excluding symlinks).
+     */
+    size_t rescanTagFiles();
+
+    /** @brief Configure database access and scan existing paths for the tag picker.
      * @param root Existing directory passed via --rootdir; canonicalized once.
      * @param gapSeconds Inactivity threshold starting a new event (default: 30 minutes).
+     * @param logger Optional application logger; must outlive this instance.
      * @throws std::filesystem::filesystem_error If root cannot be resolved.
      */
-    explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60);
+    explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60,
+                              Mantids30::Runtime::Logs::AppLog *logger = nullptr);
 
     /** @brief Read a feed page using a request-local database transaction.
      * @param cursor Number of events to skip.
@@ -137,7 +163,12 @@ public:
 
 private:
     class Reader; ///< Owns one read-only connection, transaction and streaming queries.
+    struct FileSnapshot; ///< Keeps a named SQLite memory database alive.
     std::string root; ///< Canonical HTTP root used to constrain every query.
     int64_t gap; ///< Event gap in seconds, always positive.
     std::atomic<uint64_t> generation; ///< Revision seed; never contains database rows.
+    mutable std::mutex snapshotMutex; ///< Protects snapshot publication only.
+    std::mutex scanMutex; ///< Serializes manual rescans.
+    std::shared_ptr<FileSnapshot> fileSnapshot; ///< Immutable existing-path table.
+    Mantids30::Runtime::Logs::AppLog *logger; ///< Application-owned scan logger.
 };

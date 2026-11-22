@@ -252,7 +252,8 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
         return action_thumb();
     if (act == "detail")
         return action_detail();
-    if (act == "timeline" || act == "timeline_event" || act == "timeline_samples" || act == "timeline_refresh")
+    if (act == "timeline" || act == "timeline_event" || act == "timeline_samples" || act == "timeline_refresh" ||
+        act == "timeline_tags" || act == "timeline_tags_refresh")
         return action_timeline();
 
     if (method == "GET")

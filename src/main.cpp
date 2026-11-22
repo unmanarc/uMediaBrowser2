@@ -246,9 +246,9 @@ public:
             exit(-1);
         }
         webClientParameters.httpDocumentRootDir = rp.string();
-        // Discovery and read-only queries are deferred to individual timeline requests.
-        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds);
-        log->log0(__func__, Logs::INFO, "Timeline uses direct read-only digiKam queries (no startup index).");
+        // Scan existing paths once for the tag picker; digiKam queries remain request-local.
+        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds, log);
+        log->log0(__func__, Logs::INFO, "Timeline uses read-only digiKam queries; tag selector file snapshot loaded.");
         multiThreadedAcceptor->startInBackground();
 
         log->log0(__func__, Logs::INFO, "Web Server Loaded @%s:%" PRIu16, listenAddress.c_str(), listenPort);

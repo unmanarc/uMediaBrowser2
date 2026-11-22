@@ -24,7 +24,7 @@ struct Field
 
 /** @brief Catalog shared by parser validation and the embedded editor. */
 const Field catalog[] = {
-    {"tag", "Tag", "tag", "Enter a tag name exactly as it appears in digiKam (case-sensitive). Matches this name in any tag branch."},
+    {"tag", "Tag", "tag", "Choose a tag assigned to existing files. Branches are shown as paths; matching uses the exact name in any branch. Rescan to update files added or removed since the last scan."},
     {"creationDate", "Creation date", "date", "Uses digiKam creationDate only, never the filename or modification date. Dates without a timezone use server local time."},
     {"make", "Camera manufacturer", "text", "Finds this text anywhere in the field (ignores A–Z letter case)."},
     {"model", "Camera model", "text", "Finds this text anywhere in the field (ignores A–Z letter case)."},

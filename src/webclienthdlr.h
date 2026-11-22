@@ -36,7 +36,7 @@ struct webClientParams
     std::string remoteIP;
     bool uploadOK;
     std::string appTitle;
-    std::shared_ptr<TimelineDatabase> timeline; ///< Read-only timeline query service; no media cache.
+    std::shared_ptr<TimelineDatabase> timeline; ///< Read-only queries and the tag picker's existing-path snapshot.
 
 };
 
