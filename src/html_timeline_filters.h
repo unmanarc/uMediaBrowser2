@@ -37,9 +37,14 @@ i.ic-filter{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3
 .filter-rule-top{display:flex;align-items:center;gap:12px;margin-bottom:18px;}
 .filter-rule-number{color:var(--fg-dim);font-size:12px;flex:1;}
 .filter-rule-controls{display:grid;grid-template-columns:1.2fr .8fr 1.4fr;gap:16px;}
+.filter-rule-controls>div{min-width:0;}
 .filter-control{display:flex;flex-direction:column;gap:7px;min-width:0;font-size:12px;color:var(--fg-dim);}
 .filter-control :is(input,select){width:100%;font-size:14px;}
 .filter-date-zone{margin-top:7px;width:100%;}
+.filter-tag-refresh{margin-top:7px;font-size:12px;}
+.filter-tag-refresh[hidden]{display:none;}
+#filterTagStatus{font-size:12px;color:var(--fg-dim);}
+#filterTagStatus:empty{display:none;}
 .filter-remove{color:var(--danger);}
 .filter-hint{margin:14px 0 0;font-size:12px;color:var(--fg-dim);line-height:1.6;}
 #filterEmpty{padding:46px 20px;text-align:center;border:1px dashed var(--border);border-radius:12px;color:var(--fg-dim);margin-bottom:20px;}
@@ -76,6 +81,7 @@ inline const std::string HTML = R"uFILTER(
   <div class="filter-body"><div class="filter-container">
    <p class="filter-explainer" id="filterDescription">Find moments by tag, creation date or camera metadata. Combine conditions and exclude anything you do not want to see. Filters apply only to the timeline.</p>
    <p class="filter-match">All main conditions must match (AND). Add a group to match alternatives (OR).</p>
+   <p id="filterTagStatus" role="status" aria-live="polite"></p>
    <div id="filterRules"></div>
    <div id="filterEmpty"><strong>Your whole timeline</strong>Add a condition to narrow your search. Add several conditions for a date range or precise metadata search.</div>
    <div class="filter-add-row"><button class="btn" type="button" id="filterAdd">+ Add condition</button><button class="btn" type="button" id="filterAddGroup">+ Add group (OR / AND)</button><span id="filterCount" role="status"></span></div>
@@ -98,6 +104,37 @@ var filterFields = __TIMELINE_FILTER_FIELDS__;
 var filterJSON = new URLSearchParams(location.search).get('filter') || '';
 var appliedFilter = {rules:[]};
 var filterDialog = $('#timelineFilterDialog');
+var filterTags = null, filterTagsRequest = null;
+
+/** @brief Fill native tag lists safely, retaining unavailable applied values as disabled context. */
+function populateTagSelect(select,selected){
+  select.replaceChildren(filterOption('',filterTags === null ? 'Loading tags…' : filterTags.length ? 'Choose a tag…' : 'No tags with existing files'));
+  (filterTags || []).forEach(function(tag){ select.appendChild(filterOption(tag.name,tag.path)); });
+  if (selected && !(filterTags || []).some(function(tag){ return tag.name === selected; })){
+    var unavailable = filterOption(selected,selected + ' (unavailable)'); unavailable.disabled = true; select.appendChild(unavailable);
+  }
+  select.value = selected || '';
+}
+/** @brief Ordinary reads reuse the server snapshot; only the refresh action scans disk. */
+function loadFilterTags(rescan){
+  if (filterTagsRequest) return filterTagsRequest;
+  $('#filterTagStatus').textContent = rescan ? 'Rescanning gallery… This may take a while.' : 'Loading tags…';
+  $$('.filter-tag-refresh').forEach(function(button){ button.disabled = true; });
+  filterTagsRequest = (async function(){
+    try {
+      var catalog = await data('?act=' + (rescan ? 'timeline_tags_refresh' : 'timeline_tags'),rescan ? {method:'POST'} : undefined);
+      filterTags = catalog.tags;
+      $$('.filter-tag-select',$('#filterRules')).forEach(function(select){ populateTagSelect(select,select.value); });
+      $('#filterTagStatus').textContent = (rescan ? 'Gallery rescanned. ' : '') + filterTags.length + ' tags with existing files.';
+    } catch(error){
+      $('#filterTagStatus').textContent = 'Could not load tags: ' + error.message + ' Use the rescan button to retry.';
+    } finally {
+      filterTagsRequest = null;
+      $$('.filter-tag-refresh').forEach(function(button){ button.disabled = false; });
+    }
+  })();
+  return filterTagsRequest;
+}
 
 /** @brief Attach identical conditions to feed, event, samples and carousel requests. */
 function filteredURL(url){ return url + (filterJSON ? '&filter=' + enc(filterJSON) : ''); }
@@ -184,6 +221,11 @@ function addFilterRule(rule,focus,parent){
   var zone = document.createElement('select'); zone.className = 'filter-date-zone'; zone.setAttribute('aria-label','Creation date timezone');
   zone.append(filterOption('','Server local time'),filterOption('Z','UTC'));
   var valueControl = document.createElement('div'); valueControl.append(filterControl('Value',value),zone);
+  var refreshTags = document.createElement('button'); refreshTags.type = 'button'; refreshTags.className = 'btn filter-tag-refresh';
+  refreshTags.textContent = '↻ Rescan gallery'; refreshTags.setAttribute('aria-label','Rescan gallery for tags');
+  refreshTags.title = 'Rebuild the list of existing files. A large gallery may take a while.';
+  refreshTags.disabled = !!filterTagsRequest; refreshTags.onclick = function(){ loadFilterTags(true); };
+  valueControl.appendChild(refreshTags);
   var hint = document.createElement('p'); hint.className = 'filter-hint';
   controls.append(filterControl('Field',field),filterControl('Comparison',op),valueControl);
   row.append(top,controls,hint); (parent || $('#filterRules')).appendChild(row);
@@ -195,11 +237,21 @@ function addFilterRule(rule,focus,parent){
     else if (info.type === 'date') op.append(filterOption('gt','After (>)'),filterOption('lt','Before (<)'));
     else op.append(filterOption(info.type === 'tag' ? 'eq' : 'contains',info.type === 'tag' ? 'Is exactly' : 'Contains text'));
     if (initial) op.value = rule.op; if (!op.value) op.selectedIndex = 0;
+    var nextValue = document.createElement(info.type === 'tag' ? 'select' : 'input'); nextValue.required = true;
+    nextValue.setAttribute('aria-label','Value'); value.replaceWith(nextValue); value = nextValue; row._controls.value = value;
+    refreshTags.hidden = info.type !== 'tag';
+    if (info.type === 'tag'){
+      value.className = 'filter-tag-select'; populateTagSelect(value,initial ? String(rule.value) : '');
+      value.onchange = function(){ value.setCustomValidity(''); };
+      zone.hidden = true; hint.textContent = info.hint;
+      if (filterTags === null && !filterTagsRequest) loadFilterTags(false);
+      return;
+    }
     value.type = info.type === 'number' ? 'number' : info.type === 'date' ? 'datetime-local' : 'text';
     value.step = info.type === 'date' ? '1' : 'any'; value.maxLength = 256;
     if (info.type === 'date'){ value.min = '0001-01-01T00:00'; value.max = '9999-12-31T23:59:59'; }
     else { value.removeAttribute('min'); value.removeAttribute('max'); }
-    value.placeholder = info.type === 'tag' ? 'e.g. Holiday' : info.type === 'text' ? 'Text to find…' : 'e.g. 400';
+    value.placeholder = info.type === 'text' ? 'Text to find…' : 'e.g. 400';
     value.value = initial ? String(rule.value) : ''; value.setCustomValidity('');
     zone.hidden = info.type !== 'date'; zone.value = '';
     if (initial && info.type === 'date'){
@@ -211,9 +263,9 @@ function addFilterRule(rule,focus,parent){
       value.value = date.length === 10 ? date + 'T00:00:00' : date;
     }
     hint.textContent = info.hint;
+    value.oninput = function(){ value.setCustomValidity(''); };
   }
   field.onchange = function(){ sync(false); value.focus(); };
-  value.oninput = function(){ value.setCustomValidity(''); };
   sync(true); countFilterRules(); if (focus) value.focus();
 }
 /** @brief Open a disposable draft; native Escape and Cancel never change the feed. */
@@ -223,6 +275,7 @@ function openTimelineFilters(){
     if (rule.rules) addFilterGroup(rule,false); else addFilterRule(rule,false);
   });
   countFilterRules(); filterDialog.showModal(); $('#filterAdd').focus();
+  loadFilterTags(false);
 }
 /** @brief Commit JSON and regenerate the timeline without invalidating other clients. */
 function applyTimelineFilter(filter){
@@ -245,7 +298,7 @@ $('#filterForm').onsubmit = function(event){
       return {match:row._match.value,rules:children};
     }
     var c = row._controls, info = filterFields.find(function(item){ return item.field === c.field.value; });
-    var value = info.type === 'number' ? Number(c.value.value) : c.value.value.trim();
+    var value = info.type === 'number' ? Number(c.value.value) : info.type === 'tag' ? c.value.value : c.value.value.trim();
     if (info.type === 'date') value += (value.length === 16 ? ':00' : '') + c.zone.value;
     if (typeof value === 'string' && (!value || new TextEncoder().encode(value).length > 256)){
       c.value.setCustomValidity('Enter 1–256 bytes of text.'); c.value.reportValidity(); invalid = true;
