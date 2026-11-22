@@ -1,0 +1,16 @@
+# Generate the standalone reference for the timeline database layer and adapter.
+PROJECT_NAME           = "uMediaBrowser2 Timeline Database"
+OUTPUT_DIRECTORY       = build/docs/timeline
+INPUT                  = src/timeline_database.h src/timeline_database.cpp src/actions/action_timeline.cpp
+FILE_PATTERNS          = *.h *.cpp
+RECURSIVE              = NO
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_ALL            = NO
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HAVE_DOT               = NO
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES

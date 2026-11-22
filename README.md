@@ -49,6 +49,79 @@ Lightweight web file explorer and media gallery that comes with:
 - TLS (https) Support
 - On-the-fly tar.gz generation
 - Web file manager UI with [keyboard shortcuts](shortcuts.md)
+- Timeline with events spanning folders, progressive loading, and a shared media carousel
+
+### Timeline
+
+Use the **Timeline** button in the folder browser, or open `/?view=timeline`.
+The **Folders** button returns to the original browser. Both pages share their
+styles, thumbnail workers, and full-screen viewer.
+
+The timeline uses digiKam's `digikam4.db` through the **libMantids30 SQLite3**
+connector. Set the served directory with `--rootdir`, for example:
+
+```bash
+./build/timeline/uMediaBrowser2 --rootdir /home/user/Pictures/Albums/Familiar
+```
+
+Starting at that directory, the server searches its parents up to `/` and opens
+the nearest `digikam4.db` with SQLite's **read-only** `mode=ro`. SQLite must be
+built with URI support (`USE_URI`). The database is never created or modified.
+`AlbumRoots` and `Albums` resolve collection paths; only entries inside
+`--rootdir` enter the timeline. Collection identifiers with `path=` (including
+percent-encoded paths) and absolute `specificPath` values are supported.
+
+Dates come exclusively from **`Images.modificationDate`**, and file sizes come
+from `Images.fileSize`. ISO dates without an explicit timezone use server local
+time. There is no recursive media scan or EXIF extraction for the timeline.
+`TimelineDatabase` supplies feed pages, event pages and random samples through
+request-local read-only transactions. SQL joins the digiKam tables, constrains
+paths to `--rootdir`, converts dates, orders the results and filters event time
+ranges. Rows are consumed one at a time; only the requested page and up to six
+samples per displayed event are retained. There is no application media index,
+snapshot cache or startup scan. SQLite may use temporary storage for sorting.
+
+Exact existing-file totals and six-hour event boundaries require streaming the
+matching ordered rows and checking file existence. Missing files, symlinks and
+entries without valid dates are skipped before counting or pagination. Adjacent
+modification dates belong to the same event when the gap is at most **6 hours**,
+regardless of their folders. If the database is missing or cannot be read, the
+timeline shows an error and the folder browser continues to work as usual.
+
+The feed initially requests 8 events. Each story shows at most 6 random thumbnails;
+one visible story refreshes its sample every 12 seconds. Scrolling or **More +**
+loads older events. **Open event** shows a gallery with folder separators, grid/list
+controls and 60 items per page. The carousel can traverse the whole event,
+including files beyond the gallery's loaded pages.
+
+Every request reads the current database; new digiKam entries and file removals
+do not require rebuilding an index or restarting the server. New files appear in
+the timeline after digiKam has indexed them; the folder browser shows them
+immediately. Uploads, deletions and the refresh button advance the client revision.
+Database/WAL file identity also detects external changes and replacement. An
+outdated pagination token returns HTTP 409 so the UI can reload current results.
+Event IDs contain a revision and time bounds for direct event range queries.
+
+The database layer and its HTTP adapter include Doxygen comments describing the
+API, ownership, memory bounds, read-only guarantees, ordering and error handling.
+Generate HTML reference documentation with `doxygen Doxyfile.timeline` (requires
+Doxygen); the output is written under `build/docs/timeline/html/`.
+
+Additional JSON services (same authentication as the folder browser):
+
+| Request | Result |
+| --- | --- |
+| `GET ?act=timeline&cursor=0&limit=8` | Newest events, samples, revision and next cursor; pass `revision` on subsequent pages |
+| `GET ?act=timeline_event&event=ID&cursor=0&limit=60` | Event items ordered by folder, with global event positions |
+| `GET ?act=timeline_samples&event=ID` | Up to six random items from an event |
+| `POST ?act=timeline_refresh` | Advance the client revision and read the first page; requires the usual CSRF cookie/header |
+
+Integration tests create a temporary library and launch a local server. They
+require `convert` and `node` in addition to the built application:
+
+```bash
+python3 tests/test_timeline.py build/timeline/uMediaBrowser2
+```
 
 ### Use Cases:
 
