@@ -224,6 +224,10 @@ public:
             log->log0(__func__, Logs::CRITICAL, "Invalid Document Root Directory.");
             exit(-1);
         }
+        webClientParameters.httpDocumentRootDir = rp.string();
+        // Discovery and read-only queries are deferred to individual timeline requests.
+        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string());
+        log->log0(__func__, Logs::INFO, "Timeline uses direct read-only digiKam queries (no startup index).");
         multiThreadedAcceptor->startInBackground();
 
         log->log0(__func__, Logs::INFO, "Web Server Loaded @%s:%" PRIu16, listenAddress.c_str(), listenPort);
