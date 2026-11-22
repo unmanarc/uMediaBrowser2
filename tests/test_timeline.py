@@ -52,6 +52,14 @@ class TimelineTests(unittest.TestCase):
                 CREATE TABLE Albums(id INTEGER PRIMARY KEY, albumRoot INTEGER, relativePath TEXT, UNIQUE(albumRoot, relativePath));
                 CREATE TABLE Images(id INTEGER PRIMARY KEY, album INTEGER, name TEXT, modificationDate DATETIME, fileSize INTEGER);
                 CREATE TABLE ImageInformation(imageid INTEGER PRIMARY KEY, creationDate DATETIME);
+                CREATE TABLE Tags(id INTEGER PRIMARY KEY, pid INTEGER, name TEXT);
+                CREATE TABLE ImageTags(imageid INTEGER, tagid INTEGER, UNIQUE(imageid, tagid));
+                CREATE INDEX image_tags_image ON ImageTags(imageid);
+                CREATE TABLE ImageMetadata(imageid INTEGER PRIMARY KEY, make TEXT, model TEXT, lens TEXT,
+                    aperture REAL, focalLength REAL, focalLength35 REAL, exposureTime REAL,
+                    exposureProgram INTEGER, exposureMode INTEGER, sensitivity INTEGER, flash INTEGER,
+                    whiteBalance INTEGER, whiteBalanceColorTemperature INTEGER, meteringMode INTEGER,
+                    subjectDistance REAL, subjectDistanceCategory INTEGER);
             ''')
             identifier = 'volumeid:?path=' + urllib.parse.quote(str(cls.library), safe='/') + '&fileuuid=test'
             db.execute('INSERT INTO AlbumRoots VALUES(1, ?, ?)', (identifier, '/'))
@@ -153,6 +161,233 @@ class TimelineTests(unittest.TestCase):
             page = cls.api(act='timeline', cursor=page['next'], revision=page['revision'])
             events.extend(page['events'])
         return events
+
+    @staticmethod
+    def filter_json(*rules, match='all'):
+        """Encode the same JSON contract used by the timeline editor."""
+        return json.dumps(dict(rules=[dict(match=match, rules=rules)] if match == 'any' else rules))
+
+    @contextmanager
+    def filter_library(self):
+        """Create independent tags, dates and camera metadata, then remove all fixture rows.
+
+        Filenames/modification dates deliberately disagree with creationDate. Two
+        tags with the same name exercise EXISTS deduplication across tag branches.
+        """
+        files = []
+        records = [
+            ('IMG_20300101-100000-a.jpg', '2020-02-29T12:00:00', 'Canon', 'EOS R5', 'RF 24-70%', 100, 2.8),
+            ('b.jpg', '2021-01-01T00:00:00', 'Nikon', 'Z_8', '50 mm', 800, 5.6),
+            ('c.jpg', None, None, None, None, None, None),
+            ('d.jpg', 'bad date', 'CANON', 'EOS R6', 'RF 24-70%', 400, 4.0),
+            ('e.jpg', '2020-03-01T03:00:00+03:00', 'Sony', 'ILCE', '35 mm', 200, 1.8),
+        ]
+        try:
+            for index, (name, creation, make, model, lens, iso, aperture) in enumerate(records):
+                files.append(self.photo('Filters/'+name, 1_850_000_000 + index*100))
+                with sqlite_connection(self.database) as db:
+                    imageid = db.execute("SELECT id FROM Images WHERE album=(SELECT id FROM Albums WHERE relativePath='/Familiar/Filters') AND name=?", (name,)).fetchone()[0]
+                    if index != 2:
+                        db.execute('INSERT INTO ImageInformation(imageid,creationDate) VALUES(?,?)', (imageid, creation))
+                        db.execute('INSERT INTO ImageMetadata(imageid,make,model,lens,sensitivity,aperture,exposureTime) VALUES(?,?,?,?,?,?,?)',
+                                   (imageid, make, model, lens, iso, aperture, .008))
+                    if index in (0, 1):
+                        for branch in (9101, 9102):
+                            db.execute('INSERT OR IGNORE INTO Tags(id,pid,name) VALUES(?,?,?)', (branch, branch+10, 'Holiday'))
+                            db.execute('INSERT INTO ImageTags(imageid,tagid) VALUES(?,?)', (imageid, branch))
+                    db.execute('INSERT OR IGNORE INTO Tags(id,pid,name) VALUES(9103,0,?)', ("O'Brien %_ ñ",))
+                    if index == 4: db.execute('INSERT INTO ImageTags(imageid,tagid) VALUES(?,9103)', (imageid,))
+                    for tagid, tag, indexes in [(9104, 'Aaron', (0, 1)), (9105, 'Esther', (1, 4))]:
+                        db.execute('INSERT OR IGNORE INTO Tags(id,pid,name) VALUES(?,0,?)', (tagid, tag))
+                        if index in indexes: db.execute('INSERT INTO ImageTags(imageid,tagid) VALUES(?,?)', (imageid, tagid))
+            yield records
+        finally:
+            for path in files: path.unlink(missing_ok=True)
+            with sqlite_connection(self.database) as db:
+                for table in ('ImageTags', 'ImageMetadata', 'ImageInformation'):
+                    db.execute(f"DELETE FROM {table} WHERE imageid IN (SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Filters')")
+                db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Filters')")
+                db.execute('DELETE FROM Tags WHERE id IN (9101,9102,9103,9104,9105)')
+
+    def filtered_items(self, filter_json):
+        """Traverse filtered event/feed pagination with the same JSON on every call."""
+        page = self.api(act='timeline', filter=filter_json, limit=1)
+        self.assertTrue(page['database_available'], page['error'])
+        items = []
+        while True:
+            for event in page['events']:
+                cursor = 0
+                while True:
+                    event_page = self.api(act='timeline_event', event=event['id'], cursor=cursor, limit=1, filter=filter_json)
+                    self.assertEqual([item['index'] for item in event_page['items']], list(range(cursor, event_page['next'])))
+                    items.extend(event_page['items'])
+                    if not event_page['has_more']: break
+                    cursor = event_page['next']
+            if not page['has_more']: break
+            page = self.api(act='timeline', filter=filter_json, limit=1, cursor=page['next'], revision=page['revision'])
+        self.assertEqual(len(items), page['total_items'])
+        return items
+
+    def test_filters_tags_negation_and_literal_values(self):
+        with self.filter_library():
+            original = self.database.read_bytes()
+            tagged = self.filter_json(dict(field='tag', op='eq', value='Holiday'))
+            self.assertEqual({i['name'] for i in self.filtered_items(tagged)}, {'IMG_20300101-100000-a.jpg', 'b.jpg'})
+            total = self.api(act='timeline')['total_items']
+            negative = self.filter_json(dict(field='tag', op='eq', value='Holiday', negate=True))
+            files = self.filtered_items(negative)
+            self.assertEqual(len(files), total-2)
+            self.assertIn('c.jpg', {i['name'] for i in files})
+            for text, expected in [("O'Brien %_ ñ", {'e.jpg'}), ('holiday', set()), ("Holiday' OR 1=1 --", set()), ('%_', set())]:
+                with self.subTest(tag=text):
+                    actual = self.filtered_items(self.filter_json(dict(field='tag', op='eq', value=text)))
+                    self.assertEqual({i['name'] for i in actual}, expected)
+            self.assertEqual(self.database.read_bytes(), original)
+            self.assertIn('unindexed.jpg', [i['name'] for i in self.api(act='ls', path='/', filter=tagged)['items']])
+
+    def test_filters_metadata_operators_and_boolean_combinations(self):
+        with self.filter_library():
+            cases = [
+                ([dict(field='make', op='contains', value='canon')], 'all', {'IMG_20300101-100000-a.jpg','d.jpg'}),
+                ([dict(field='lens', op='contains', value='%')], 'all', {'IMG_20300101-100000-a.jpg','d.jpg'}),
+                ([dict(field='model', op='contains', value='_')], 'all', {'b.jpg'}),
+                ([dict(field='sensitivity', op='gt', value=400)], 'all', {'b.jpg'}),
+                ([dict(field='sensitivity', op='lt', value=200)], 'all', {'IMG_20300101-100000-a.jpg'}),
+                ([dict(field='exposureTime', op='eq', value=.008)], 'all', {'IMG_20300101-100000-a.jpg','b.jpg','d.jpg','e.jpg'}),
+                ([dict(field='make', op='contains', value='Canon'), dict(field='aperture', op='lt', value=3)], 'all', {'IMG_20300101-100000-a.jpg'}),
+                ([dict(field='make', op='contains', value='Nikon'), dict(field='aperture', op='lt', value=2)], 'any', {'b.jpg','e.jpg'}),
+                ([dict(field='tag', op='eq', value='Holiday'), dict(field='make', op='contains', value='Canon', negate=True)], 'all', {'b.jpg'}),
+            ]
+            for rules, match, expected in cases:
+                with self.subTest(rules=rules, match=match):
+                    items = self.filtered_items(self.filter_json(*rules, match=match))
+                    self.assertEqual({i['name'] for i in items}, expected)
+            negative = self.filter_json(dict(field='make', op='contains', value='Canon', negate=True))
+            self.assertIn('c.jpg', {i['name'] for i in self.filtered_items(negative)})
+
+    def test_filters_use_creation_date_without_fallback(self):
+        with self.filter_library():
+            rules = [dict(field='creationDate', op='gt', value='2020-02-29'),
+                     dict(field='creationDate', op='lt', value='2020-03-01')]
+            files = self.filtered_items(self.filter_json(*rules))
+            self.assertEqual([i['name'] for i in files], ['IMG_20300101-100000-a.jpg'])
+            self.assertEqual(files[0]['date_source'], 'filename')  # grouping precedence is preserved
+            self.assertEqual(self.filtered_items(self.filter_json(dict(field='creationDate', op='gt', value='2029-01-01'))), [])
+            strict = self.filter_json(dict(field='creationDate', op='lt', value='2020-03-01T00:00:01Z'))
+            self.assertEqual({i['name'] for i in self.filtered_items(strict)}, {'IMG_20300101-100000-a.jpg','e.jpg'})
+            negative = self.filter_json(dict(field='creationDate', op='gt', value='2020-01-01', negate=True))
+            self.assertTrue({'c.jpg','d.jpg'}.issubset({i['name'] for i in self.filtered_items(negative)}))
+
+    def test_filters_composed_groups_keep_main_and(self):
+        with self.filter_library():
+            aaron = dict(field='tag', op='eq', value='Aaron')
+            esther = dict(field='tag', op='eq', value='Esther')
+            either = dict(match='any', rules=[aaron, esther])
+            query = self.filter_json(either)
+            items = self.filtered_items(query)
+            self.assertEqual({i['name'] for i in items}, {'IMG_20300101-100000-a.jpg','b.jpg','e.jpg'})
+            self.assertEqual(len(items), 3)  # b.jpg has both tags, but occurs once.
+            limited = self.filter_json(either, dict(field='sensitivity',op='gt',value=150))
+            self.assertEqual({i['name'] for i in self.filtered_items(limited)}, {'b.jpg','e.jpg'})
+            both = dict(match='all', rules=[aaron, esther])
+            self.assertEqual([i['name'] for i in self.filtered_items(self.filter_json(both))], ['b.jpg'])
+            nested = dict(match='any', rules=[
+                dict(match='all', rules=[aaron, dict(field='make',op='contains',value='Canon')]),
+                esther,
+            ])
+            query = self.filter_json(nested, dict(field='sensitivity',op='lt',value=500))
+            self.assertEqual({i['name'] for i in self.filtered_items(query)}, {'IMG_20300101-100000-a.jpg','e.jpg'})
+            # Negation still includes missing metadata inside composed predicates.
+            negative = dict(match='any', rules=[aaron, dict(field='make',op='contains',value='Canon',negate=True)])
+            self.assertIn('c.jpg', {i['name'] for i in self.filtered_items(self.filter_json(negative))})
+            page = self.api(act='timeline', filter=query)
+            canonical = json.dumps(page['filter'], sort_keys=True)
+            self.assertNotIn('match', page['filter'])
+            self.assertEqual(self.api(act='timeline', filter=canonical)['revision'], page['revision'])
+            self.assertEqual({i['name'] for i in self.filtered_items(canonical)}, {'IMG_20300101-100000-a.jpg','e.jpg'})
+            event = self.api(act='timeline',filter=self.filter_json(either))['events'][0]
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.api(act='timeline_samples',event=event['id'],filter=self.filter_json(both))
+            self.assertEqual(error.exception.code, 409); error.exception.close()
+
+    def test_filters_regroup_events_and_scope_samples_and_cursors(self):
+        with self.filter_library():
+            # All three files originally form one event; removing the middle one
+            # creates a gap >=1800 seconds and therefore two filtered events.
+            with sqlite_connection(self.database) as db:
+                for index, name in enumerate(('b.jpg','c.jpg','d.jpg')):
+                    stamp = datetime.datetime.fromtimestamp(2_000_000_000+index*1000, datetime.timezone.utc).isoformat()
+                    db.execute('UPDATE Images SET modificationDate=? WHERE name=?', (stamp,name))
+            query = self.filter_json(dict(field='model', op='contains', value='Z_8'), dict(field='model', op='contains', value='R6'), match='any')
+            page = self.api(act='timeline', filter=query, limit=1)
+            self.assertEqual(page['total_items'], 2)
+            self.assertEqual(page['total_events'], 2)
+            event = page['events'][0]
+            samples = self.api(act='timeline_samples', event=event['id'], filter=json.dumps(page['filter'], sort_keys=True))
+            self.assertEqual([i['name'] for i in samples['samples']], ['d.jpg'])
+            self.assertEqual(samples['samples'][0]['index'], 0)
+            baseline = self.api(act='timeline')
+            for params in [dict(act='timeline_event', event=event['id']), dict(act='timeline_samples', event=event['id']),
+                           dict(act='timeline', cursor=page['next'], revision=page['revision'])]:
+                with self.assertRaises(urllib.error.HTTPError) as error: self.api(**params)
+                self.assertEqual(error.exception.code, 409); error.exception.close()
+            # Merely changing this client's filter must not invalidate other users.
+            self.api(act='timeline', filter=self.filter_json(dict(field='tag', op='eq', value='Holiday')))
+            self.assertEqual(self.api(act='timeline')['revision'], baseline['revision'])
+            token = next(cookie.value for cookie in self.cookies if cookie.name == 'CSRFToken')
+            request = urllib.request.Request(self.url+'?'+urllib.parse.urlencode(dict(act='timeline_refresh',filter=query)), method='POST', headers={'X-CSRFToken':token})
+            with self.client.open(request) as response: refreshed = json.load(response)['data']
+            self.assertEqual(refreshed['total_items'], 2)
+            self.assertNotEqual(refreshed['revision'], page['revision'])
+
+    def test_filters_validation(self):
+        valid = dict(field='tag', op='eq', value='Holiday')
+        bad = ['null', '[]', '{', '{}', '"text"', ' ' * 8193,
+               '{"match":"all","rules":[{"field":"sensitivity","op":"eq","value":1e9999}]}']
+        bad += [json.dumps(value) for value in [
+            dict(match='unknown',rules=[]), dict(match='all',rules={}), dict(match='all',rules=[valid]*21),
+            dict(match='all',rules=[],extra=True), dict(match='all',rules=[None]),
+            dict(match='any',rules=[valid]), dict(match='any',rules=[]),
+        ]]
+        invalid_groups = [dict(match='any',rules=[]), dict(match='all',rules={}), dict(match='any'),
+                          dict(rules=[valid]), dict(match='unknown',rules=[valid]),
+                          dict(match='any',rules=[valid],field='tag'),
+                          dict(match='any',rules=[valid],negate=True),
+                          dict(match='all',rules=[dict(valid,op='contains')]),
+                          dict(match='any',rules=[valid]*20)]  # Group itself counts toward 20.
+        deep = valid
+        for _ in range(5): deep = dict(match='any',rules=[deep])
+        bad += [self.filter_json(group) for group in invalid_groups + [deep]]
+        invalid_rules = [dict(valid,field='unknown'), dict(valid,field='make) OR 1=1 --'), dict(valid,op='contains'),
+                         dict(valid,value=''), dict(valid,value='   '), dict(valid,value='x'*257), dict(valid,value='x\x00y'),
+                         dict(valid,value=5), dict(valid,negate='true'), dict(valid,extra=True),
+                         dict(field='make',op='eq',value='Canon'), dict(field='sensitivity',op='gt',value='400'),
+                         dict(field='sensitivity',op='gt',value=True), dict(field='sensitivity',op='contains',value=400),
+                         dict(field='creationDate',op='eq',value='2020-01-01')]
+        invalid_rules += [dict(field='creationDate',op='gt',value=date) for date in
+                          ['2023-02-29','2024-04-31','0000-01-01','2024-13-01','2024-01-01T24:00',
+                           '2024-01-01T12:60','2024-01-01T12:00:60','2024-01-01T12:00:00+14:01',"2024-01-01' OR 1=1"]]
+        bad += [self.filter_json(rule) for rule in invalid_rules]
+        for query in bad:
+            with self.subTest(query=query[:200]):
+                with self.assertRaises(urllib.error.HTTPError) as error: self.api(act='timeline',filter=query)
+                self.assertEqual(error.exception.code, 400); error.exception.close()
+        before = self.api(act='timeline')
+        for query in ('', self.filter_json(), json.dumps(dict(match='all',rules=[]))):
+            empty = self.api(act='timeline', filter=query)
+            self.assertEqual(empty['revision'], before['revision'])
+            self.assertEqual(empty['total_items'], before['total_items'])
+        deep = valid
+        for _ in range(4): deep = dict(match='any',rules=[deep])
+        self.api(act='timeline',filter=self.filter_json(deep))
+        self.api(act='timeline',filter=self.filter_json(dict(match='any',rules=[valid]*19)))
+        flat = self.api(act='timeline',filter=self.filter_json(valid))
+        legacy = self.api(act='timeline',filter=json.dumps(dict(match='all',rules=[valid])))
+        self.assertEqual(flat['revision'], legacy['revision'])
+        # Normalization makes JSON whitespace, key order and omitted negate safe
+        # across feed/gallery requests without accepting a different condition.
+        query = self.filter_json(dict(field='creationDate',op='gt',value='1960-01-01T00:00Z'))
+        self.assertEqual(self.api(act='timeline', filter=query)['filter']['rules'][0]['value'], '1960-01-01T00:00:00Z')
 
     def test_pages_and_samples(self):
         page = self.api(act='timeline')

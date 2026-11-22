@@ -141,8 +141,86 @@ Database/WAL file identity also detects external changes and replacement. An
 outdated pagination token returns HTTP 409 so the UI can reload current results.
 Event IDs contain a revision and time bounds for direct event range queries.
 
+The **filter icon** in the Timeline header opens a full-screen condition editor.
+Add a condition, choose its field and comparison, then enter a value. Each
+condition can be removed or changed from **Include** to **Exclude (NOT)**.
+The main list always combines items with **AND**. Use **Add group (OR / AND)**
+to add a composed subfilter as one item. Inside each group, choose
+**Any condition (OR)** or **All conditions (AND)** and add conditions or nested
+groups. For example, `(tag Aaron OR tag Esther) AND sensitivity > 400` uses
+an OR group followed by a numeric condition in the main list.
+**Apply & refresh timeline** closes the editor and regenerates the feed;
+**Reset all & show everything** clears the applied conditions, closes the editor
+and reloads the complete timeline. **Cancel**, the close button and Escape
+discard draft changes and preserve the applied filter. An active-condition
+badge and summary provide access to the editor. Conditions survive page reloads
+and event links through the page URL. Folder browsing is independent.
+
+Filtering runs entirely in SQL, before event grouping, totals, sampling and
+pagination. The same filter follows event galleries and carousel navigation.
+Removing intervening pictures can split an event according to the usual gap.
+Filter identity is part of the revision: using an event ID or cursor with
+different conditions returns HTTP 409. Applying/resetting conditions does not
+invalidate another client's timeline.
+
+Supported conditions:
+
+| Field | Comparisons | Meaning |
+| --- | --- | --- |
+| `tag` | `eq` | Exact, case-sensitive `Tags.name` entered manually; no tag list is loaded. A name shared by multiple branches matches any branch, without duplicate photos |
+| `creationDate` | `gt`, `lt` | Strictly after/before `ImageInformation.creationDate`, without falling back to filename/modification date |
+| `make`, `model`, `lens` | `contains` | Literal substring, ASCII case-insensitive; `%` and `_` have no wildcard meaning |
+| `aperture`, `focalLength`, `focalLength35`, `exposureTime`, `exposureProgram`, `exposureMode`, `sensitivity`, `flash`, `whiteBalance`, `whiteBalanceColorTemperature`, `meteringMode`, `subjectDistance`, `subjectDistanceCategory` | `gt`, `lt`, `eq` | Numeric comparisons against the corresponding `ImageMetadata` column |
+
+The field names and types follow the [official digiKam SQLite schema](https://github.com/KDE/digikam/blob/master/core/data/database/dbconfig.xml.cmake.in).
+The editor shows units and hints: exposure time is in seconds (e.g. `0.008` for
+1/125 s), focal length in mm, temperature in K, and subject distance in meters.
+Enum/bitmask fields compare digiKam's stored numeric codes. A date range uses
+one **After** condition and one **Before** condition in the main list or an AND group.
+The editor supports server local time or UTC. JSON also accepts explicit
+timezone offsets; existing offsets are preserved when editing. Comparisons use
+one-second precision. ISO dates without a time mean midnight in server local
+time. Grouping and displayed dates retain the existing capture-date precedence.
+
+Positive conditions do not match absent/NULL metadata or missing/invalid creation
+dates. **Exclude** complements the whole condition, including missing values;
+for example, excluding tag `Holiday` also retains files without any tags.
+
+Every timeline service below accepts the same optional `filter` query parameter,
+containing a URL-encoded JSON object. Example before URL encoding:
+
+```json
+{
+  "rules": [
+    {"match": "any", "rules": [
+      {"field": "tag", "op": "eq", "value": "Aaron"},
+      {"field": "tag", "op": "eq", "value": "Esther"}
+    ]},
+    {"field": "creationDate", "op": "gt", "value": "2024-01-01T00:00:00"},
+    {"field": "creationDate", "op": "lt", "value": "2025-01-01T00:00:00"},
+    {"field": "make", "op": "contains", "value": "Canon", "negate": true},
+    {"field": "sensitivity", "op": "lt", "value": 1600}
+  ]
+}
+```
+
+`negate` defaults to `false` on individual conditions. The main object contains
+only `rules` and always uses AND; an explicit main `match: "all"` is accepted
+and omitted in canonical responses, while main `match: "any"` is rejected.
+Subfilters contain `match: "all"` or `"any"` and a nonempty `rules` array;
+they can nest up to four group levels. Omit `filter` or use an empty main
+`rules` array for the whole timeline. Feed/event responses include the
+validated `filter`. Filters are stateless, limited to 20 items (conditions and
+groups combined) and 8192
+decoded JSON bytes; each text value is limited to 256 UTF-8 bytes. Numbers must
+be finite JSON numbers, not numeric strings. Unknown fields/properties, invalid
+operators, types, calendar dates and timezone offsets return HTTP 400. SQL uses
+bound values and allowlisted identifiers. No digiKam database writes are made.
+
 The database layer and its HTTP adapter include Doxygen comments describing the
 API, ownership, memory bounds, read-only guarantees, ordering and error handling.
+The JSON filter validator/compiler and embedded editor also document their
+contracts and draft/apply lifecycle internally.
 Generate HTML reference documentation with `doxygen Doxyfile.timeline` (requires
 Doxygen); the output is written under `build/docs/timeline/html/`.
 
@@ -160,6 +238,13 @@ require `convert` and `node` in addition to the built application:
 
 ```bash
 python3 tests/test_timeline.py build/timeline/uMediaBrowser2
+```
+
+Optional editor/browser tests require Python Playwright and Google Chrome
+(`CHROME_BINARY` can select another Chromium executable):
+
+```bash
+python3 tests/test_timeline_filters_ui.py build/timeline/uMediaBrowser2
 ```
 
 ### Use Cases:
