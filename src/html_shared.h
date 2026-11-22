@@ -361,6 +361,28 @@ async function api(path, opts){
   try { return await res.json(); } catch(e){ return {ok:false, error:'Bad response'}; }
 }
 
+/** Return the applied effective filter (mandatory AND user), ready for --prefilter. */
+window.getCurrentFilter = async function(){
+  var current = typeof filterJSON === 'string' ? filterJSON : '';
+  var response = await api('?act=current_filter' + (current ? '&filter=' + enc(current) : ''));
+  if (!response.ok) throw new Error(response.error || 'Could not export current filter');
+  return response.data;
+};
+window.showCurrentFilter = async function(){
+  var filter = await getCurrentFilter();
+  console.log(JSON.stringify(filter,null,2));
+  return filter;
+};
+window.downloadCurrentFilter = async function(filename){
+  var filter = await getCurrentFilter();
+  // Preserve the server-validated compact byte size, including near-limit exports.
+  var url = URL.createObjectURL(new Blob([JSON.stringify(filter)],{type:'application/json'}));
+  var link = document.createElement('a'); link.href = url; link.download = filename || 'prefilter.json';
+  document.body.appendChild(link); link.click(); link.remove();
+  setTimeout(function(){ URL.revokeObjectURL(url); },1000);
+  return filter;
+};
+
 function toast(msg){
   var t = $('#toast');
   t.textContent = msg;

@@ -27,6 +27,17 @@ Status::Code WebClientHdlr::action_tree()
 
     const std::string rel = dirInfo.relativePath.empty() ? "/" : dirInfo.relativePath;
 
+    std::optional<TimelineDatabase::FolderView> visible;
+    if (webClientParameters.timeline && webClientParameters.timeline->hasPrefilter())
+    {
+        try { visible = webClientParameters.timeline->folders(rel); }
+        catch (const TimelineDatabase::Error &error)
+        {
+            writeJSON(false, error.what(), boost::json::value{});
+            return respond(HTTP::Status::Code::S_503_SERVICE_UNAVAILABLE, clientRequest.getURI());
+        }
+    }
+
     boost::json::value nodes = boost::json::array{};
 
     std::error_code ec;
@@ -39,6 +50,11 @@ Status::Code WebClientHdlr::action_tree()
         if (!fs::is_directory(entry.path(), sec))
             continue;
 
+        std::string childRel = rel;
+        if (childRel.back() != '/') childRel += '/';
+        childRel += name;
+        if (visible && !visible->directories.count(childRel)) continue;
+
         // Determine whether this subdirectory has any subdirectory of its own.
         bool hasChildren = false;
         std::error_code cec;
@@ -47,15 +63,11 @@ Status::Code WebClientHdlr::action_tree()
             std::error_code isec;
             if (fs::is_directory(cit->path(), isec) && !isec)
             {
+                if (visible && !visible->directories.count(childRel + "/" + cit->path().filename().string())) continue;
                 hasChildren = true;
                 break;
             }
         }
-
-        std::string childRel = rel;
-        if (childRel.back() != '/')
-            childRel += '/';
-        childRel += name;
 
         boost::json::object node;
         node["name"] = name;
@@ -66,9 +78,8 @@ Status::Code WebClientHdlr::action_tree()
 
     boost::json::object data;
     data["path"] = rel;
-    data["nodes"] = std::move(nodes);
-
     logRpc(Mantids30::Runtime::Logs::INFO, "R/TREE: path='%s' -> %u dir nodes", rel.c_str(), (unsigned) nodes.as_array().size());
+    data["nodes"] = std::move(nodes);
     writeJSON(true, "", data);
     return respond(HTTP::Status::Code::S_200_OK, clientRequest.getURI().c_str());
 }

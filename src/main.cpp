@@ -69,6 +69,7 @@ public:
 
         globalArguments->addCommandLineOption("Timeline Options", 0, "timeline-gap-minutes", "Inactivity in minutes that starts a new timeline group (positive integer)", "30", Abstract::Var::Type::STRING);
         globalArguments->addCommandLineOption("Timeline Options", 0, "tag-exclude-file", "Hide tag names from the picker and badges using one case-sensitive ECMAScript regex per line", "", Abstract::Var::Type::STRING);
+        globalArguments->addCommandLineOption("Server Options", 0, "prefilter", "JSON file with mandatory AND conditions for timeline and folders", "", Abstract::Var::Type::STRING);
 
         globalArguments->addCommandLineOption("HTTP Security", 'p', "passfile", "HTTP User/Pass File", "", Abstract::Var::Type::STRING);
 
@@ -148,6 +149,28 @@ public:
         webClientParameters.debug = globalArguments->getCommandLineOptionBooleanValue("debug");
         webClientParameters.useXRealIP = globalArguments->getCommandLineOptionBooleanValue("use-x-real-ip");
         webClientParameters.appTitle = globalArguments->getCommandLineOptionValue("title")->toString();
+
+        const auto prefilterFile = globalArguments->getCommandLineOptionValue("prefilter")->toString();
+        if (!prefilterFile.empty())
+        {
+            try
+            {
+                std::ifstream input(prefilterFile, std::ios::binary);
+                if (!input) throw std::runtime_error("Cannot open file");
+                // Read one byte past the limit to reject oversized files without loading them.
+                std::string json(65537, '\0');
+                input.read(json.data(), json.size());
+                json.resize(static_cast<size_t>(input.gcount()));
+                if (input.bad()) throw std::runtime_error("Cannot read file");
+                prefilter = TimelineFilter::parsePrefilter(json);
+                log->log0(__func__, Logs::INFO, "Loaded mandatory prefilter from %s", prefilterFile.c_str());
+            }
+            catch (const std::exception &error)
+            {
+                log->log0(__func__, Logs::CRITICAL, "Invalid --prefilter '%s': %s", prefilterFile.c_str(), error.what());
+                return false;
+            }
+        }
 
         // Parse explicitly so zero, negatives, trailing text and overflow fail
         // before opening the listener. Conversion to seconds must also be safe.
@@ -280,7 +303,7 @@ public:
         }
         webClientParameters.httpDocumentRootDir = rp.string();
         // Scan existing paths once for the tag picker; digiKam queries remain request-local.
-        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds, log, std::move(tagExclusions));
+        webClientParameters.timeline = std::make_shared<TimelineDatabase>(rp.string(), timelineGapSeconds, log, std::move(tagExclusions), std::move(prefilter));
         log->log0(__func__, Logs::INFO, "Timeline uses read-only digiKam queries; tag selector file snapshot loaded.");
         multiThreadedAcceptor->startInBackground();
 
@@ -319,6 +342,7 @@ private:
     uint16_t listenPort;
     int64_t timelineGapSeconds = 30 * 60; ///< CLI-configured inactivity threshold in seconds.
     std::vector<std::regex> tagExclusions; ///< Compiled once during configuration.
+    std::optional<TimelineFilter> prefilter; ///< Validated before starting the listener.
     Logs::AppLog *log;
     webClientParams webClientParameters;
 

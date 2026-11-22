@@ -164,10 +164,66 @@ groups. For example, `(tag Aaron OR tag Esther) AND sensitivity > 400` uses
 an OR group followed by a numeric condition in the main list.
 **Apply & refresh timeline** closes the editor and regenerates the feed;
 **Reset all & show everything** clears the applied conditions, closes the editor
-and reloads the complete timeline. **Cancel**, the close button and Escape
+and reloads the timeline within the mandatory prefilter, if configured. **Cancel**, the close button and Escape
 discard draft changes and preserve the applied filter. An active-condition
 badge and summary provide access to the editor. Conditions survive page reloads
-and event links through the page URL. Folder browsing is independent.
+and event links through the page URL. User conditions apply to the timeline;
+the mandatory prefilter below also applies to folder browsing.
+
+### Mandatory prefilter
+
+Use `--prefilter /path/to/prefilter.json` to restrict both **Timeline** and
+**Folders** with a JSON filter using the same fields, operators and groups as
+the timeline editor. For example, this file restricts the library to tag `Family`:
+
+```json
+{"rules":[{"field":"tag","op":"eq","value":"Family"}]}
+```
+
+```bash
+./build/timeline/uMediaBrowser2 --rootdir /path/to/media --prefilter /path/to/prefilter.json
+```
+
+The server applies **prefilter AND user filter** before timeline grouping,
+counts, pagination and samples. Resetting or changing the user filter preserves
+the mandatory conditions. The editor displays a notice when a prefilter is active.
+Folders lists only matching existing files; the tree hides directories with no
+matching files anywhere beneath them and preserves ancestors needed to reach
+matching descendants. A valid timeline date is not required in Folders.
+The tag picker is also restricted to the prefilter. Direct downloads, thumbnails,
+metadata and ZIP/TAR downloads respect the same mandatory conditions; directory
+archives contain only matching files.
+
+Filters use digiKam metadata, so a configured prefilter exposes only indexed
+regular files under `--rootdir`, excluding symlinks and unindexed files. This
+also applies to an explicit `{"rules":[]}` prefilter. Without `--prefilter`,
+folder browsing keeps its usual behavior. If digiKam cannot be read while a
+prefilter is active, folder queries fail instead of displaying unfiltered results.
+
+The file is loaded once at startup; restart to reload it. An unreadable file,
+empty file, invalid JSON or invalid condition prevents startup. Prefilter files
+allow up to 64 KiB and 200 items, with the same four group levels and value
+validation as user filters. User filters retain their separate 8192-byte,
+20-item limits.
+
+To create a file from your current applied conditions, use the browser's
+JavaScript console on either page:
+
+```javascript
+await showCurrentFilter();                   // Print JSON
+await getCurrentFilter();                    // Return a JSON object
+await downloadCurrentFilter();               // Download prefilter.json
+await downloadCurrentFilter('family.json');   // Choose a filename
+```
+
+The export includes the mandatory prefilter AND the applied user conditions
+on Timeline, or the mandatory prefilter alone on Folders. Unapplied editor
+changes are excluded. The exported JSON can be passed directly to `--prefilter`;
+exports exceeding its size/item limits report an error. The corresponding
+authenticated endpoint is `GET ?act=current_filter&filter=URL_ENCODED_JSON`,
+returning the filter in the usual JSON envelope's `data` property.
+
+### Timeline filter details
 
 The tag list excludes digiKam technical tags marked with `internalTag` and the
 entire `_Digikam_Internal_Tags_` branch. It shows only nonblank tags assigned to at least one file in the
@@ -279,12 +335,14 @@ Additional JSON services (same authentication as the folder browser):
 | `POST ?act=timeline_refresh` | Advance the client revision and read the first page; requires the usual CSRF cookie/header |
 | `GET ?act=timeline_tags` | Nonblank tags assigned to files in the memory snapshot, with IDs, parent IDs, names, branch paths and distinct file counts; no disk rescan |
 | `POST ?act=timeline_tags_refresh` | Rebuild the existing-path snapshot and return the updated tag catalog plus `scanned_files`; requires the usual CSRF cookie/header |
+| `GET ?act=current_filter` | Export the mandatory prefilter AND optional `filter` conditions as reusable prefilter JSON |
 
 Integration tests create a temporary library and launch a local server. They
 require `convert` and `node` in addition to the built application:
 
 ```bash
 python3 tests/test_timeline.py build/timeline/uMediaBrowser2
+python3 tests/test_prefilter.py build/timeline/uMediaBrowser2
 ```
 
 Optional editor/browser tests require Python Playwright and Google Chrome

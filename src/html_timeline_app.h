@@ -335,7 +335,7 @@ async function loadFeed(refresh){
     var url = refresh ? '?act=timeline_refresh' : '?act=timeline&cursor=' + view.cursor + (view.revision ? '&revision=' + enc(view.revision) : '');
     var page = await data(filteredURL(url),refresh ? {method:'POST'} : undefined);
     if (view !== feed) return;
-    appliedFilter = page.filter; updateFilterIndicator();
+    appliedFilter = page.filter; updateFilterIndicator(); updatePrefilterNotice(page);
     view.revision = page.revision; view.cursor = page.next; view.more = page.has_more; view.loaded = true;
     page.events.forEach(appendStory);
     view.status = page.total_events.toLocaleString() + ' events · ' + page.total_items.toLocaleString() + ' items · Newest first';
@@ -397,7 +397,7 @@ async function loadEvent(){
   try {
     var page = await data(eventURL(view.id) + '&cursor=' + view.cursor);
     if (view !== eventView) return;
-    appliedFilter = page.filter; updateFilterIndicator();
+    appliedFilter = page.filter; updateFilterIndicator(); updatePrefilterNotice(page);
     view.info = page; view.cursor = page.next; view.more = page.has_more;
     view.items = view.items.concat(page.items);
     appendEventItems(page.items); describeEvent(page);

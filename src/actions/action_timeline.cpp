@@ -57,7 +57,7 @@ boost::json::object eventJSON(const TimelineDatabase::Event &event)
  * to TimelineDatabase. This adapter only handles HTTP methods, limits and JSON.
  * Every service accepts the same URL-encoded JSON `filter` query parameter.
  * Parsing precedes invalidation/database access; invalid filters return HTTP 400.
- * No filter is stored globally or applied to folder services.
+ * The database always adds the immutable startup prefilter with AND.
  */
 Status::Code WebClientHdlr::action_timeline()
 {
@@ -82,6 +82,13 @@ Status::Code WebClientHdlr::action_timeline()
     {
         const auto filter = TimelineFilter::parse(vars->getStringValue("filter"));
         auto &database = *webClientParameters.timeline;
+        if (act == "current_filter")
+        {
+            // An exported object must be accepted unchanged by --prefilter.
+            const auto effective = database.effectiveFilter(filter);
+            TimelineFilter::parsePrefilter(boost::json::serialize(effective.json()));
+            return finish(Status::Code::S_200_OK, "", effective.json());
+        }
         if (act == "timeline_tags" || rescan)
         {
             size_t scanned = 0;
@@ -109,7 +116,8 @@ Status::Code WebClientHdlr::action_timeline()
                 {"revision", page.revision}, {"events", std::move(events)}, {"next", page.next}, {"has_more", page.hasMore},
                 {"total_events", page.totalEvents}, {"total_items", page.totalItems},
                 {"database_available", page.databaseAvailable}, {"error", page.error}, {"skipped", page.skipped},
-                {"gap_seconds", database.gapSeconds()}, {"filter", filter.json()}});
+                {"gap_seconds", database.gapSeconds()}, {"filter", filter.json()},
+                {"prefilter_active", database.hasPrefilter()}});
         }
         if (act == "timeline_samples")
         {
@@ -121,6 +129,7 @@ Status::Code WebClientHdlr::action_timeline()
         const auto page = database.event(vars->getStringValue("event"), cursor, limit, filter);
         auto json = eventJSON(page.event);
         json["filter"] = filter.json();
+        json["prefilter_active"] = database.hasPrefilter();
         json["items"] = mediaJSON(page.items);
         json["next"] = page.next;
         json["has_more"] = page.hasMore;

@@ -102,6 +102,8 @@ Status::Code WebClientHdlr::action_archive()
     // requested items (not their full absolute host path).
     std::string parent;
     std::vector<std::string> bases;
+    std::vector<std::string> archiveEntries;
+    const bool prefiltered = webClientParameters.timeline && webClientParameters.timeline->hasPrefilter();
     for (const std::string &f : names)
     {
         LocalRequestedFileInfo info;
@@ -130,7 +132,33 @@ Status::Code WebClientHdlr::action_archive()
         // share the same parent; use the first one as the archive base.
         if (parent.empty())
             parent = pdir;
+        if (parent != pdir)
+        {
+            writeJSON(false, "Archive paths must share a parent directory", boost::json::value{});
+            return respond(HTTP::Status::Code::S_400_BAD_REQUEST, clientRequest.getURI());
+        }
         bases.push_back(base);
+        if (prefiltered && info.isDirectory)
+        {
+            try
+            {
+                const auto visible = webClientParameters.timeline->folders(info.relativePath);
+                const auto root = fs::path(webClientParameters.httpDocumentRootDir);
+                for (const auto &file : visible.files)
+                    archiveEntries.push_back((root / fs::path(file).relative_path()).lexically_relative(parent).string());
+            }
+            catch (const TimelineDatabase::Error &error)
+            {
+                writeJSON(false, error.what(), boost::json::value{});
+                return respond(HTTP::Status::Code::S_503_SERVICE_UNAVAILABLE, clientRequest.getURI());
+            }
+        }
+        else archiveEntries.push_back(base);
+    }
+    if (archiveEntries.empty())
+    {
+        writeJSON(false, "No files match the prefilter", boost::json::value{});
+        return respond(HTTP::Status::Code::S_400_BAD_REQUEST, clientRequest.getURI());
     }
 
     AppSpawn *spawner = new AppSpawn();
@@ -167,7 +195,10 @@ Status::Code WebClientHdlr::action_archive()
         spawner->addArgument(parent);
     }
 
-    for (const std::string &b : bases)
+    // Filtered directories are expanded to explicit files; never recurse into hidden entries.
+    if (prefiltered && fmt != "zip") spawner->addArgument("--no-recursion");
+    spawner->addArgument("--");
+    for (const std::string &b : archiveEntries)
         spawner->addArgument(b);
 
     serverResponse.contentType = "application/octet-stream";

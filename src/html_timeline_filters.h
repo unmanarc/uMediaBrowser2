@@ -80,6 +80,7 @@ inline const std::string HTML = R"uFILTER(
   </div></header>
   <div class="filter-body"><div class="filter-container">
    <p class="filter-explainer" id="filterDescription">Find moments by tag, creation date or camera metadata. Combine conditions and exclude anything you do not want to see. Filters apply only to the timeline.</p>
+   <p class="filter-explainer" id="prefilterNotice" hidden>A mandatory server filter applies to Timeline and Folders. Your conditions narrow those results further (AND). Reset clears only your conditions.</p>
    <p class="filter-match">All main conditions must match (AND). Add a group to match alternatives (OR).</p>
    <p id="filterTagStatus" role="status" aria-live="polite"></p>
    <div id="filterRules"></div>
@@ -105,6 +106,11 @@ var filterJSON = new URLSearchParams(location.search).get('filter') || '';
 var appliedFilter = {rules:[]};
 var filterDialog = $('#timelineFilterDialog');
 var filterTags = null, filterTagsRequest = null;
+
+function updatePrefilterNotice(page){
+  $('#prefilterNotice').hidden = !page.prefilter_active;
+  $('#filterReset').textContent = page.prefilter_active ? 'Reset user filters' : 'Reset all & show everything';
+}
 
 /** @brief Fill native tag lists safely, retaining unavailable applied values as disabled context. */
 function populateTagSelect(select,selected){

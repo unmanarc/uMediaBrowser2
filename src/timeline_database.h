@@ -13,6 +13,8 @@
 #include <string>
 #include <vector>
 #include "timeline_filter.h"
+#include <optional>
+#include <set>
 
 namespace Mantids30::Runtime::Logs { class AppLog; }
 
@@ -36,6 +38,8 @@ namespace Mantids30::Runtime::Logs { class AppLog; }
  * sampling and pagination. Date filters always use ImageInformation.creationDate,
  * independently of the selected grouping date. Filter identity scopes revisions,
  * so every event/gallery/sample request must repeat the same JSON conditions.
+ * An immutable startup prefilter is ANDed with every request. Folder queries
+ * reuse its SQL predicates without requiring dates and retain matching paths.
  *
  * @note Instances can be shared by HTTP workers: connections and query state
  *       belong to individual requests. Path snapshots are immutable and shared.
@@ -94,7 +98,7 @@ public:
     {
         std::string revision; ///< Database file/WAL identity plus the application revision.
         bool databaseAvailable = false; ///< False when the database cannot be read.
-        std::string error; ///< Availability error; folders remain usable independently.
+        std::string error; ///< Availability error; prefiltered folders also require digiKam.
         size_t skipped = 0; ///< Missing/unavailable files or invalid dates encountered.
         size_t totalItems = 0; ///< Existing files under rootdir matching the filter.
         size_t totalEvents = 0; ///< Events formed from those files.
@@ -115,6 +119,25 @@ public:
     /** @brief Query tags through SQL joins, without filesystem existence checks. */
     std::vector<Tag> tags() const;
 
+    /** @brief Existing matching files and their ancestor directories, as URI paths.
+     * Includes undated files. A parent stays visible while any descendant matches.
+     */
+    struct FolderView
+    {
+        std::set<std::string> files; ///< Existing matched regular files beneath the selected folder.
+        std::set<std::string> directories; ///< Ancestors of matched files, including '/'.
+    };
+
+    /** @brief Query the mandatory filter beneath a validated URI directory. */
+    FolderView folders(const std::string &path) const;
+    /** @brief Check a validated URI file against the mandatory filter and filesystem. */
+    bool allowsFile(const std::string &path) const;
+    /** @return Whether a mandatory file was configured, including an empty rule list. */
+    bool hasPrefilter() const { return prefilter.has_value(); }
+    /** @brief Compose mandatory AND request conditions without changing either input. */
+    TimelineFilter effectiveFilter(const TimelineFilter &filter = {}) const
+    { return prefilter ? prefilter->andFilter(filter) : filter; }
+
     /** @brief Rebuild existing paths, publishing atomically after a successful scan.
      * Existing readers keep the previous snapshot. Errors preserve that snapshot.
      * @return Number of regular files scanned under rootdir (excluding symlinks).
@@ -126,11 +149,13 @@ public:
      * @param gapSeconds Inactivity threshold starting a new event (default: 30 minutes).
      * @param logger Optional application logger; must outlive this instance.
      * @param tagExclusions Compiled expressions hiding matching tags and their descendants from the picker and informational badges.
+     * @param prefilter Mandatory validated rules; absent preserves unrestricted folders.
      * @throws std::filesystem::filesystem_error If root cannot be resolved.
      */
     explicit TimelineDatabase(std::string root, int64_t gapSeconds = 30 * 60,
                               Mantids30::Runtime::Logs::AppLog *logger = nullptr,
-                              std::vector<std::regex> tagExclusions = {});
+                              std::vector<std::regex> tagExclusions = {},
+                              std::optional<TimelineFilter> prefilter = {});
 
     /** @brief Read a feed page using a request-local database transaction.
      * @param cursor Number of events to skip.
@@ -177,4 +202,5 @@ private:
     std::shared_ptr<FileSnapshot> fileSnapshot; ///< Immutable existing-path table.
     Mantids30::Runtime::Logs::AppLog *logger; ///< Application-owned scan logger.
     const std::vector<std::regex> tagExclusions; ///< Tag visibility only; never media filtering.
+    const std::optional<TimelineFilter> prefilter; ///< Immutable mandatory conditions loaded at startup.
 };

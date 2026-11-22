@@ -69,6 +69,16 @@ Status::Code WebClientHdlr::action_ls()
     }
 
     std::vector<boost::json::value> vec;
+    std::optional<TimelineDatabase::FolderView> visible;
+    if (webClientParameters.timeline && webClientParameters.timeline->hasPrefilter())
+    {
+        try { visible = webClientParameters.timeline->folders(rel); }
+        catch (const TimelineDatabase::Error &error)
+        {
+            writeJSON(false, error.what(), boost::json::value{});
+            return respond(HTTP::Status::Code::S_503_SERVICE_UNAVAILABLE, clientRequest.getURI());
+        }
+    }
     for (auto it = fs::directory_iterator(dirInfo.fullPath, ec); !ec && it != fs::directory_iterator(); it.increment(ec))
     {
         const fs::directory_entry &entry = *it;
@@ -83,6 +93,9 @@ Status::Code WebClientHdlr::action_ls()
         if (type == fs::file_type::unknown)
             continue;
         const bool isDir = (type == fs::file_type::directory);
+        const auto child = (rel == "/" ? "/" : rel + (rel.back() == '/' ? "" : "/")) + name;
+        if (visible && !(isDir ? visible->directories.count(child) : visible->files.count(child)))
+            continue;
 
         // st_uid / st_gid are not exposed by std::filesystem; keep a plain stat for them.
         struct stat64 rawStat;

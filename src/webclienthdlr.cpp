@@ -156,7 +156,16 @@ void WebClientHdlr::writeJSON(const bool ok, const std::string &error, const boo
 
 bool WebClientHdlr::resolveExistingPath(const std::string &uriStylePath, LocalRequestedFileInfo &info)
 {
-    return resolveLocalFilePathFromURI0E(uriStylePath.empty() ? "/" : uriStylePath, webClientParameters.httpDocumentRootDir, &info);
+    if (!resolveLocalFilePathFromURI0E(uriStylePath.empty() ? "/" : uriStylePath, webClientParameters.httpDocumentRootDir, &info))
+        return false;
+    const auto &database = webClientParameters.timeline;
+    if (info.isDirectory || !database || !database->hasPrefilter()) return true;
+    try { return database->allowsFile(info.relativePath); }
+    catch (const TimelineDatabase::Error &error)
+    {
+        logRpc(Logs::WARNING, "Prefilter file check failed: %s", error.what());
+        return false;
+    }
 }
 
 bool WebClientHdlr::resolveNewChildPath(const std::string &parentUri, const std::string &childName, LocalRequestedFileInfo &info)
@@ -253,7 +262,7 @@ Status::Code WebClientHdlr::onHTTPClientContentReceived()
     if (act == "detail")
         return action_detail();
     if (act == "timeline" || act == "timeline_event" || act == "timeline_samples" || act == "timeline_refresh" ||
-        act == "timeline_tags" || act == "timeline_tags_refresh")
+        act == "timeline_tags" || act == "timeline_tags_refresh" || act == "current_filter")
         return action_timeline();
 
     if (method == "GET")

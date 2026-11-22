@@ -234,9 +234,12 @@ public:
      * @param version Revision counter captured by the calling API method.
      * @param filter Validated conditions included in SQL scope and revision identity.
      * @param exclusions Rules hiding tag names and their descendants from all tag output.
+     * @param uriPath Optional validated file/folder path narrowing SQL before streaming.
+     * @param singleFile Select an exact file instead of a folder subtree.
      * @throws Error If discovery, connection, schema access or URI support fails.
      */
-    Reader(const std::string &root, uint64_t version, const TimelineFilter &filter, const std::vector<std::regex> &exclusions)
+    Reader(const std::string &root, uint64_t version, const TimelineFilter &filter, const std::vector<std::regex> &exclusions,
+           const std::string &uriPath = "", bool singleFile = false)
         : exclusions(exclusions), root(root), database(findDatabase(root))
     {
         if (database.empty()) throw Error(ErrorKind::Unavailable, "No digikam4.db found in --rootdir or its ancestors.");
@@ -249,7 +252,7 @@ public:
         // restriction even if the operating-system user can write this file.
         if (!connection.connect("file:" + uriEncode(database.string()) + "?mode=ro") || !connection.qExecuteEx("BEGIN"))
             throw Error(ErrorKind::Unavailable, "Cannot open digiKam database in read-only mode.");
-        prepareScope(filter);
+        prepareScope(filter, uriPath, singleFile);
         // Closing the connection automatically ends this read-only transaction.
     }
 
@@ -444,6 +447,20 @@ public:
 
     std::string revision; ///< Token for the currently open database transaction.
 
+    /** @brief Stream matching existing paths without requiring a timeline date. */
+    void walkPaths(const std::function<void(const std::string &)> &consume)
+    {
+        STRING path, folder;
+        auto query = connection.qSelect(scope + " SELECT DISTINCT path, folder FROM image_dates", bindings, {&path, &folder});
+        checkQuery(query);
+        while (query->step())
+        {
+            const auto file = path.getValue();
+            if (exists(folder.getValue(), file)) consume(root == "/" ? file : file.substr(root.size()));
+        }
+        checkQuery(query, true);
+    }
+
     /** @brief Join the current digiKam rows to an immutable existing-path table.
      * Ancestors provide labels only; a parent without assigned files is not an
      * option. Missing dates do not disqualify a file from the tag catalog.
@@ -599,8 +616,10 @@ private:
      * timestamp is filename first, then ImageInformation.creationDate, then
      * Images.modificationDate; all ordering/range queries share that expression.
      * @param filter Validated SQL conditions applied to image_dates before grouping.
+     * @param uriPath Optional file/folder subtree, relative to the HTTP root.
+     * @param singleFile Whether uriPath selects one exact filename.
      */
-    void prepareScope(const TimelineFilter &filter)
+    void prepareScope(const TimelineFilter &filter, const std::string &uriPath, bool singleFile)
     {
         std::string collections;
         {
@@ -625,6 +644,26 @@ private:
         if (collections.empty()) collections = "(NULL,NULL)";
         bindings[":root"] = std::make_shared<STRING>(root);
         bindings[":prefix"] = std::make_shared<STRING>(root == "/" ? "/" : root + "/");
+        // Restrict folders/files before the CTE flattening barrier. In particular,
+        // a thumbnail's mandatory check must not stream the entire library.
+        std::string selected = "1";
+        if (!uriPath.empty())
+        {
+            const auto full = normalized(fs::path(root) / fs::path(uriPath).relative_path());
+            if (!inside(full, root)) throw Error(ErrorKind::InvalidArgument, "Invalid folder path");
+            const auto folder = singleFile ? full.parent_path() : full;
+            bindings[":selectedFolder"] = std::make_shared<STRING>(folder.string());
+            if (singleFile)
+            {
+                bindings[":selectedName"] = std::make_shared<STRING>(full.filename().string());
+                selected = "a.folder=:selectedFolder AND i.name=:selectedName";
+            }
+            else
+            {
+                bindings[":selectedPrefix"] = std::make_shared<STRING>(folder == "/" ? "/" : folder.string() + "/");
+                selected = "a.folder=:selectedFolder OR substr(a.folder,1,length(:selectedPrefix))=:selectedPrefix";
+            }
+        }
         const auto predicate = filterSQL(filter);
         // These unbounded LIMIT/OFFSET clauses keep the date CTEs as streaming
         // subqueries. Without that flattening barrier SQLite substitutes the
@@ -651,7 +690,7 @@ private:
                 WHERE (a.folder=:root OR substr(a.folder,1,length(:prefix))=:prefix)
                   AND i.name IS NOT NULL AND i.name NOT IN ('','.','..')
                   AND instr(i.name,'/')=0 AND instr(i.name,char(0))=0
-                  AND )SQL" + predicate + R"SQL(
+                  AND ()SQL" + selected + ") AND " + predicate + R"SQL(
                 LIMIT -1 OFFSET 0
             ), filename_times AS (
                 SELECT imageid, path, folder, size, creation_date, modification_date,
@@ -709,10 +748,10 @@ private:
 };
 
 TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds, Mantids30::Runtime::Logs::AppLog *logger,
-                                   std::vector<std::regex> tagExclusions)
+                                   std::vector<std::regex> tagExclusions, std::optional<TimelineFilter> prefilter)
     : root(fs::canonical(root).string()), gap(std::max<int64_t>(1, gapSeconds)),
       generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())), logger(logger),
-      tagExclusions(std::move(tagExclusions))
+      tagExclusions(std::move(tagExclusions)), prefilter(std::move(prefilter))
 {
     rescanTagFiles();
 }
@@ -767,10 +806,35 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
         std::lock_guard<std::mutex> lock(snapshotMutex);
         snapshot = fileSnapshot;
     }
-    Reader reader(root, generation.load(), {}, tagExclusions);
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
     auto result = reader.readTags(snapshot->uri);
     reader.verify();
     return result;
+}
+
+TimelineDatabase::FolderView TimelineDatabase::folders(const std::string &path) const
+{
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, path.empty() ? "/" : path);
+    FolderView result;
+    reader.walkPaths([&](const std::string &file) {
+        result.files.insert(file);
+        for (auto parent = fs::path(file).parent_path();; parent = parent.parent_path())
+        {
+            result.directories.insert(parent.string());
+            if (parent == "/") break;
+        }
+    });
+    reader.verify();
+    return result;
+}
+
+bool TimelineDatabase::allowsFile(const std::string &path) const
+{
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions, path, true);
+    bool allowed = false;
+    reader.walkPaths([&](const std::string &) { allowed = true; });
+    reader.verify();
+    return allowed;
 }
 
 TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision, const TimelineFilter &filter) const
@@ -780,7 +844,7 @@ TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, c
     const auto version = generation.load();
     try
     {
-        Reader reader(root, version, filter, tagExclusions);
+        Reader reader(root, version, effectiveFilter(filter), tagExclusions);
         reader.requireRevision(revision);
         auto page = reader.readFeed(cursor, limit, gap);
         reader.verify();
@@ -801,7 +865,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 {
     if (!limit || limit > 60) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     const auto version = generation.load();
-    Reader reader(root, version, filter, tagExclusions);
+    Reader reader(root, version, effectiveFilter(filter), tagExclusions);
     auto page = reader.readEvent(reader.decodeEvent(id), cursor, limit, false);
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
@@ -811,7 +875,7 @@ TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_
 TimelineDatabase::Event TimelineDatabase::samples(const std::string &id, const TimelineFilter &filter) const
 {
     const auto version = generation.load();
-    Reader reader(root, version, filter, tagExclusions);
+    Reader reader(root, version, effectiveFilter(filter), tagExclusions);
     auto event = reader.readEvent(reader.decodeEvent(id), 0, 0, true).event;
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
