@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
 include(GNUInstallDirs)
 
-set(APP_NAME "uMediaBrowser")
+set(APP_NAME "uMediaBrowser2")
 set(SVERSION 3.0.0)
 
 project(${APP_NAME})
@@ -51,6 +51,9 @@ endif()
 ################################################################################
 # Dependencies:
 ################################################################################
+pkg_check_modules(SQLITE3 REQUIRED IMPORTED_TARGET sqlite3)
+target_link_libraries(${APP_NAME} PkgConfig::SQLITE3)
+
 find_package(Boost REQUIRED COMPONENTS regex thread json)
 target_include_directories(${APP_NAME} PUBLIC ${Boost_INCLUDE_DIRS})
 target_link_libraries(${APP_NAME} ${Boost_LIBRARIES})
@@ -64,6 +67,8 @@ endif()
 # Mantids30 Libraries:
 ################################################################################
 set(Mantids30_LIBRARIES
+    Mantids30_DB_SQLite3
+    Mantids30_DB_Common
     Mantids30_Protocol_HTTP
     Mantids30_Protocol_MIME
     Mantids30_DataFormat_JSON
