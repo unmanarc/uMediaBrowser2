@@ -16,7 +16,7 @@
  * match the whole library; subfilters must be nonempty, at most four levels deep.
  * Only parse() can populate conditions, so SQL identifiers/operators always come
  * from a validated allowlist. Values remain data and must be bound by the reader.
- * Instances contain no per-user server state and never affect the folder browser.
+ * Instances contain no per-user server state. A startup prefilter can also scope folders.
  */
 class TimelineFilter
 {
@@ -43,6 +43,14 @@ public:
      */
     static TimelineFilter parse(const std::string &json);
 
+    /** @brief Parse a mandatory startup filter (64 KiB, 200 items; same rule grammar).
+     * Empty input is invalid. Larger limits allow exporting prefilter AND user rules.
+     */
+    static TimelineFilter parsePrefilter(const std::string &json);
+
+    /** @brief Combine validated main lists with AND, preserving nested groups. */
+    TimelineFilter andFilter(const TimelineFilter &other) const;
+
     /** @brief Describe every filterable field for the editor, without reading tags.
      * @return Objects containing field, label, type and explanatory hint.
      * @note ImageMetadata types follow digiKam's SQLite schema; enums are numbers.
@@ -59,6 +67,7 @@ public:
     const std::vector<Rule> &rules() const { return conditions; }
 
 private:
-    static std::vector<Rule> parseRules(const boost::json::array &rules, size_t depth, size_t &count);
+    static TimelineFilter parse(const std::string &json, size_t maxBytes, size_t maxItems);
+    static std::vector<Rule> parseRules(const boost::json::array &rules, size_t depth, size_t &count, size_t maxItems);
     std::vector<Rule> conditions; ///< Main AND list, preserving editor order.
 };

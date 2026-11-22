@@ -97,9 +97,26 @@ std::string date(const std::string &value)
 
 TimelineFilter TimelineFilter::parse(const std::string &text)
 {
+    if (text.empty()) return {};
+    return parse(text, 8192, 20);
+}
+
+TimelineFilter TimelineFilter::parsePrefilter(const std::string &text)
+{
+    return parse(text, 65536, 200);
+}
+
+TimelineFilter TimelineFilter::andFilter(const TimelineFilter &other) const
+{
+    auto result = *this;
+    result.conditions.insert(result.conditions.end(), other.conditions.begin(), other.conditions.end());
+    return result;
+}
+
+TimelineFilter TimelineFilter::parse(const std::string &text, size_t maxBytes, size_t maxItems)
+{
     TimelineFilter result;
-    if (text.empty()) return result;
-    if (text.size() > 8192) invalid("maximum JSON size is 8192 bytes");
+    if (text.size() > maxBytes) invalid("maximum JSON size is " + std::to_string(maxBytes) + " bytes");
     boost::system::error_code error;
     const auto parsed = boost::json::parse(text, error);
     if (error || !parsed.is_object()) invalid("expected a JSON object");
@@ -110,16 +127,16 @@ TimelineFilter TimelineFilter::parse(const std::string &text)
     const auto *rules = object.if_contains("rules");
     if (!rules || !rules->is_array()) invalid("rules must be an array");
     size_t count = 0;
-    result.conditions = parseRules(rules->as_array(), 0, count);
+    result.conditions = parseRules(rules->as_array(), 0, count, maxItems);
     return result;
 }
 
-std::vector<TimelineFilter::Rule> TimelineFilter::parseRules(const boost::json::array &rules, size_t depth, size_t &count)
+std::vector<TimelineFilter::Rule> TimelineFilter::parseRules(const boost::json::array &rules, size_t depth, size_t &count, size_t maxItems)
 {
     std::vector<Rule> conditions;
     for (const auto &value : rules)
     {
-        if (++count > 20) invalid("maximum is 20 items including subfilters");
+        if (++count > maxItems) invalid("maximum is " + std::to_string(maxItems) + " items including subfilters");
         if (!value.is_object()) invalid("each rule must be an object");
         const auto &rule = value.as_object();
         Rule condition;
@@ -134,7 +151,7 @@ std::vector<TimelineFilter::Rule> TimelineFilter::parseRules(const boost::json::
             if (depth >= 4) invalid("maximum subfilter depth is 4");
             condition.composed = true;
             condition.all = match == "all";
-            condition.rules = parseRules(children->as_array(), depth + 1, count);
+            condition.rules = parseRules(children->as_array(), depth + 1, count, maxItems);
             conditions.push_back(std::move(condition));
             continue;
         }
