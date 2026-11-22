@@ -18,14 +18,9 @@ inline std::string buildHTMLTimelineApp(const std::string &appTitle)
 <style>
 __SHARED_CSS__
 __TIMELINE_FILTER_CSS__
-#timelineApp{height:100vh;height:100dvh;display:grid;grid-template-rows:auto 1fr auto;}
+#timelineApp{height:100vh;height:100dvh;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr auto;}
 a{color:var(--accent2);text-decoration:none;}
 a:hover{text-decoration:underline;}
-.timeline-header{display:flex;align-items:center;gap:20px;padding:14px 24px;background:var(--panel);border-bottom:1px solid var(--border);}
-.timeline-header .brand{font-weight:600;color:var(--accent2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;}
-.mode-switch{display:flex;gap:4px;padding:4px;background:var(--bg);border:1px solid var(--border);border-radius:9px;}
-.mode-switch .btn{border-color:transparent;background:transparent;text-decoration:none;}
-.mode-switch .current{background:var(--panel2);color:var(--accent2);}
 #timelineMain{overflow:auto;min-height:0;scrollbar-gutter:stable;}
 .timeline-content{max-width:1060px;margin:auto;padding:32px 28px;}
 .timeline-intro{margin-bottom:28px;}
@@ -93,9 +88,6 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
 .event-list .meta{display:block;white-space:normal;max-width:40%;}
 #eventView[hidden],#feedView[hidden]{display:none;}
 @media(max-width:760px){
- .timeline-header{padding:10px 12px;gap:8px;flex-wrap:wrap;}
- .timeline-header .brand{min-width:100px;font-size:12px;}
- .mode-switch .btn{padding:5px 8px;}
  .timeline-content{padding:24px 12px;}
  .story{padding-left:16px;margin-left:5px;}
  .story-heading h2{font-size:16px;}
@@ -114,14 +106,16 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
 </head>
 <body>
 <div id="timelineApp">
- <header class="timeline-header">
+ <header class="timeline-header app-header">
   <span class="brand">__APP_TITLE__</span>
+  <div class="header-actions">
+   <button class="btn" id="btnTimelineFilter" title="Filter timeline" aria-label="Timeline filters" aria-haspopup="dialog" aria-controls="timelineFilterDialog" aria-pressed="false"><i class="ic ic-filter"></i><span id="filterBadge" hidden></span></button>
+   <button class="btn icon" id="btnRefreshTimeline" title="Refresh timeline" aria-label="Refresh timeline"><i class="ic ic-refresh"></i></button>
+  </div>
   <nav class="mode-switch" aria-label="Browse mode">
    <a class="btn" href="?" id="folderMode"><i class="ic ic-folder"></i> Folders</a>
    <a class="btn current" href="?view=timeline" aria-current="page">Timeline</a>
   </nav>
-  <button class="btn" id="btnTimelineFilter" title="Filter timeline" aria-label="Timeline filters" aria-haspopup="dialog" aria-controls="timelineFilterDialog" aria-pressed="false"><i class="ic ic-filter"></i><span id="filterBadge" hidden></span></button>
-  <button class="btn icon" id="btnRefreshTimeline" title="Refresh timeline" aria-label="Refresh timeline"><i class="ic ic-refresh"></i></button>
  </header>
  <main id="timelineMain">
   <div class="timeline-content">

@@ -12,9 +12,9 @@ namespace HTMLTimelineFilters {
 /** @brief Responsive styles scoped to timeline filter controls. */
 inline const std::string CSS = R"uFILTER(
 i.ic-filter{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath fill='%23e0e6ed' d='M3 4h18v2l-7 8v5l-4 2v-7L3 6V4z'/%3E%3C/svg%3E");}
-#btnTimelineFilter{gap:7px;}
+#btnTimelineFilter{position:relative;}
 #btnTimelineFilter[aria-pressed="true"]{border-color:var(--accent);color:var(--accent2);background:#3b82f61a;}
-#filterBadge{font-size:11px;min-width:18px;padding:1px 5px;border-radius:9px;background:var(--accent);color:white;}
+#filterBadge{position:absolute;top:-6px;right:-6px;font-size:11px;min-width:18px;padding:1px 5px;border-radius:9px;background:var(--accent);color:white;}
 #filterBadge[hidden],#filterSummary[hidden]{display:none;}
 #filterSummary{margin:0 0 22px;border-radius:18px;color:var(--accent2);}
 #timelineFilterDialog{position:fixed;inset:0;width:100vw;height:100vh;height:100dvh;max-width:none;max-height:none;margin:0;padding:0;border:0;background:var(--bg);color:var(--fg);font:inherit;}

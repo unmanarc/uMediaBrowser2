@@ -21,10 +21,15 @@ __SHARED_CSS__
 <body>
 <div id="app">
   <!-- A -->
-  <header id="zoneA">
+  <header id="zoneA" class="app-header">
     <span class="brand">__APP_TITLE__</span>
-    <span style="flex:1"></span>
-    <button class="btn icon" id="btnFullscreen" title="Fullscreen"><i class="ic ic-fullscreen"></i></button>
+    <div class="header-actions">
+      <button class="btn icon" id="btnFullscreen" title="Fullscreen"><i class="ic ic-fullscreen"></i></button>
+    </div>
+    <nav class="mode-switch" aria-label="Browse mode">
+      <a class="btn current" href="?" aria-current="page"><i class="ic ic-folder"></i> Folders</a>
+      <a class="btn" href="?view=timeline" title="Timeline">Timeline</a>
+    </nav>
   </header>
 
   <!-- C -->
@@ -60,7 +65,7 @@ __SHARED_CSS__
     </aside>
   </div>
 
-  <!-- F: status bar (becomes the top header in the phone view; in the phone
+  <!-- F: status bar (moves below the page header in the phone view; in the phone
        view it wraps two rows: the icon bar + the directory name) -->
   <footer id="zoneF">
     <div class="mbar">
@@ -70,7 +75,6 @@ __SHARED_CSS__
         <button class="btn icon mnav" id="btnMBack" title="Back"><i class="ic ic-back"></i></button>
       </span>
       <span class="spacer"></span>
-      <a class="btn" href="?view=timeline" title="Timeline" style="text-decoration:none">Timeline</a>
       <button class="btn icon" id="btnGrid" title="Grid view"><i class="ic ic-grid"></i></button>
       <button class="btn icon" id="btnList" title="List view"><i class="ic ic-list"></i></button>
       <button class="btn icon" id="btnAlbum" title="Album view"><i class="ic ic-album"></i></button>
@@ -116,8 +120,8 @@ __SHARED_ALBUM_HTML__
 <script>
 'use strict';
 __SHARED_DOM_JS__
-// Phone view (CSS media query hides the header/location/tree/details panels
-// and turns the footer into a top header with Up/Refresh/Back buttons).
+// Phone view (CSS media query hides the location/tree/details panels
+// and moves the footer below the page header with Up/Refresh/Back buttons).
 var mqlMobile = window.matchMedia('(max-width: 640px), (max-height: 520px)');
 function isMobile(){ return mqlMobile.matches; }
 // Re-render when the viewport crosses the phone breakpoint so the panels

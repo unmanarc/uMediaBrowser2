@@ -19,15 +19,18 @@ body{
   font:14px/1.4 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif;
   overflow:hidden;
 }
-#app{display:grid;height:100vh;grid-template-rows:52px 48px 1fr 40px;}
+#app{display:grid;height:100vh;grid-template-columns:minmax(0,1fr);grid-template-rows:60px 48px 1fr 40px;}
 
-/* ----- A: toolbar ----- */
-#zoneA{
-  display:flex; align-items:center; gap:6px; padding:0 10px;
+/* Shared page header keeps the browse modes in the same place in both views. */
+.app-header{
+  display:flex; align-items:center; gap:8px; padding:0 10px; height:60px;
   background:var(--panel); border-bottom:1px solid var(--border);
-  flex-wrap:nowrap; overflow-x:auto;
 }
-#zoneA .brand{font-weight:600; margin-right:8px; color:var(--accent2); white-space:nowrap;}
+.app-header .brand{flex:1; min-width:0; font-weight:600; color:var(--accent2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+.header-actions{display:flex; align-items:center; gap:8px; flex:none;}
+.mode-switch{display:flex; flex:none; gap:4px; padding:4px; background:var(--bg); border:1px solid var(--border); border-radius:9px;}
+.mode-switch .btn{border-color:transparent; background:transparent; text-decoration:none;}
+.mode-switch .current{background:var(--panel2); color:var(--accent2);}
 
 /* ----- C: location bar ----- */
 #zoneC{
@@ -39,7 +42,7 @@ body{
   border:1px solid var(--border); border-radius:6px; padding:6px 10px; font:inherit;
 }
 
-/* ----- F: status bar (becomes the top header in the phone view) ----- */
+/* ----- F: status bar (moves below the page header in the phone view) ----- */
 #zoneF{
   display:flex; justify-content:flex-end; align-items:center; gap:8px;
   padding:0 10px; background:var(--panel); border-top:1px solid var(--border);
@@ -51,7 +54,7 @@ body{
 #zoneF .mtitle-row{display:none;}
 
 /* ----- B + D + E ----- */
-#zoneMid{display:grid; grid-template-columns:260px 1fr 300px; min-height:0;}
+#zoneMid{display:grid; grid-template-columns:260px minmax(0,1fr) 300px; min-height:0;}
 #zoneE{
   display:flex; flex-direction:column; min-height:0;
   background:var(--panel); border-left:1px solid var(--border);
@@ -181,22 +184,25 @@ i.ic-album{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.
 #emptyMsg{padding:40px; text-align:center; color:var(--fg-dim);}
 
 /* ----- mobile (phone) view -----
-   The status bar (F) becomes a fixed top header with Up / Refresh / Back
-   buttons; the file view (D) fills the rest. Header (A), location bar (C),
+   The status bar (F) becomes a navigation bar with Up / Refresh / Back
+   buttons below the shared page header; the file view (D) fills the rest. Location bar (C),
    tree (B) and details (E) are hidden. The ".." entry is no longer rendered
    in the list: navigation is done through the header buttons. ----- */
 @media (max-width: 640px), (max-height: 520px) {
-  #app{grid-template-rows:66px 1fr;}
-  #zoneA, #zoneC, #zoneB, #zoneE{display:none !important;}
+  #app{grid-template-rows:60px 66px 1fr;}
+  #zoneA{order:-2;}
+  .app-header .brand{font-size:12px;}
+  .mode-switch .btn{padding:5px 8px;}
+  #zoneC, #zoneB, #zoneE{display:none !important;}
   #zoneMid{display:block; min-height:0;}
   /* Keep #zoneD inside the grid track's 1fr height (it has overflow:auto)
      so its vertical scrollbar stays visible on phones. */
   #zoneD{padding:8px; height:100%; min-height:0;}
-  /* F moves to the top row and becomes a two-row header:
+  /* F moves below the page header and becomes a two-row navigation bar:
      row 1 = the icon buttons (Up/Refresh/Back, view, size, sort),
      row 2 = the current directory name, centered and emphasized.
      (No extra grid children are added: #zoneF itself wraps the two rows
-     so #app's explicit 2-row grid stays exactly aligned.) */
+     so #app's explicit 3-row grid stays exactly aligned.) */
   #zoneF{
     order:-1; flex:0 0 66px; height:66px;
     display:flex; flex-direction:column;
