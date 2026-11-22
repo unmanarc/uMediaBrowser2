@@ -135,6 +135,14 @@ loads older events. **Open event** shows a gallery with folder separators, grid/
 controls and 60 items per page. The carousel can traverse the whole event,
 including files beyond the gallery's loaded pages.
 
+Event cards and **Event details** show informational tag badges for all existing
+files in the event, including files outside the current gallery page or samples.
+Each badge shows the tag's short name; hover to see its full ancestor path. Tags
+from different branches retain separate identities and consistent colors. In the
+carousel, the current file's badges appear along the bottom while hovering over
+the image, and remain visible on touch devices. Tags marked as digiKam internal
+are omitted. Picker exclusion rules do not hide these informational badges.
+
 Every request reads the current database; new digiKam entries and file removals
 do not require rebuilding an index or restarting the server. New files appear in
 the timeline after digiKam has indexed them; the folder browser shows them
@@ -142,6 +150,8 @@ immediately. Uploads, deletions and the refresh button advance the client revisi
 Database/WAL file identity also detects external changes and replacement. An
 outdated pagination token returns HTTP 409 so the UI can reload current results.
 Event IDs contain a revision and time bounds for direct event range queries.
+Event and media JSON include `tags` arrays with `id`, `name` and full `path`;
+event tags are deduplicated by ID and sorted by path, following the active filter.
 
 The **filter icon** in the Timeline header opens a full-screen condition editor.
 Add a condition, choose its field and comparison, then enter a value or select a

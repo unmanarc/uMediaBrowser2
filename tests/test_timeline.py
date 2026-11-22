@@ -457,6 +457,56 @@ class TimelineTests(unittest.TestCase):
         self.assertEqual([i['name'] for i in files], ['same.jpg','same.jpg'])
         self.assertTrue(all(i['timestamp'] == i['mtime'] and i['date_source'] == 'modificationDate' for i in files))
 
+    def test_event_and_image_badges_cover_all_pages_and_respect_filters(self):
+        """Event tags include unsampled/page-two files, but never missing files or technical tags."""
+        try:
+            with sqlite_connection(self.database) as db:
+                db.executemany('INSERT INTO Tags(id,pid,name) VALUES(?,?,?)', [
+                    (9500, 0, 'Travel'), (9501, 9500, 'Beach'),
+                    (9502, 0, 'Family'), (9503, 9502, 'Beach'),
+                    (9504, 0, 'Only missing'), (9505, 0, '<tag> & ñ'),
+                    (9506, 0, '_Digikam_Internal_Tags_'), (9507, 9506, 'Internal child'),
+                    (9508, 0, '  \t'),
+                ])
+                for album, name, ids in [
+                    ('/Familiar/Large', '000.jpg', (9501, 9505, 9507, 9508)),
+                    ('/Familiar/Large', '001.jpg', (9501,)),
+                    ('/Familiar/Other', 'duplicate.jpg', (9503,)),
+                    ('/Familiar', 'missing.jpg', (9504,)),
+                ]:
+                    for tagid in ids:
+                        db.execute('INSERT INTO ImageTags(imageid,tagid) SELECT i.id,? FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath=? AND i.name=?',
+                                   (tagid, album, name))
+            original = self.database.read_bytes()
+            event = next(e for e in self.all_events() if e['count'] == 66)
+            expected = [dict(id=9505, name='<tag> & ñ', path='<tag> & ñ'),
+                        dict(id=9503, name='Beach', path='Family / Beach'),
+                        dict(id=9501, name='Beach', path='Travel / Beach')]
+            self.assertEqual(event['tags'], expected)
+            first = self.api(act='timeline_event', event=event['id'])
+            second = self.api(act='timeline_event', event=event['id'], cursor=60)
+            self.assertEqual(first['tags'], expected)
+            self.assertEqual(second['tags'], expected)
+            self.assertEqual(first['items'][0]['tags'], [expected[0], expected[2]])
+            self.assertEqual(first['items'][2]['tags'], [])
+            self.assertEqual(second['items'][-1]['tags'], [expected[1]])
+            sample = self.api(act='timeline_samples', event=event['id'])
+            self.assertEqual(sample['tags'], expected)
+            for item in sample['samples']:
+                one = self.api(act='timeline_event', event=event['id'], cursor=item['index'], limit=1)['items'][0]
+                self.assertEqual(item['tags'], one['tags'])
+            # Same leaf name keeps both identities, and the event union follows
+            # the filtered files rather than the unfiltered time range.
+            query = self.filter_json(dict(field='tag', op='eq', value='<tag> & ñ'))
+            filtered = self.api(act='timeline', filter=query)
+            self.assertEqual(filtered['total_items'], 1)
+            self.assertEqual(filtered['events'][0]['tags'], [expected[0], expected[2]])
+            self.assertEqual(self.database.read_bytes(), original)
+        finally:
+            with sqlite_connection(self.database) as db:
+                db.execute('DELETE FROM ImageTags WHERE tagid BETWEEN 9500 AND 9508')
+                db.execute('DELETE FROM Tags WHERE id BETWEEN 9500 AND 9508')
+
     def test_digikam_dates_and_read_only_database(self):
         before = hashlib.sha256(self.database.read_bytes()).hexdigest()
         mode = self.database.stat().st_mode
@@ -747,6 +797,8 @@ class TimelineTests(unittest.TestCase):
                 items = [item for event in feed['events']
                          for item in api(act='timeline_event', event=event['id'], filter=query)['items']]
                 self.assertEqual({item['name'] for item in items}, {'IMG_20300101-100000-a.jpg', 'b.jpg'})
+                self.assertTrue(all(any(tag['name'] == 'Aaron' for tag in item['tags']) for item in items))
+                self.assertTrue(all(any(tag['name'] == 'Aaron' for tag in event['tags']) for event in feed['events']))
                 self.assertEqual(len(api(act='ls', path='/Filters')['items']), 5)
                 token = next(cookie.value for cookie in cookies if cookie.name == 'CSRFToken')
                 request = urllib.request.Request(url+'act=timeline_tags_refresh', method='POST', headers={'X-CSRFToken':token})
