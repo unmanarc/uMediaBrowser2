@@ -46,6 +46,9 @@ boost::json::object eventJSON(const TimelineDatabase::Event &event)
 /** @brief Adapt HTTP requests to direct read-only database operations.
  * SQL, discovery, filesystem filtering and event calculations belong entirely
  * to TimelineDatabase. This adapter only handles HTTP methods, limits and JSON.
+ * Every service accepts the same URL-encoded JSON `filter` query parameter.
+ * Parsing precedes invalidation/database access; invalid filters return HTTP 400.
+ * No filter is stored globally or applied to folder services.
  */
 Status::Code WebClientHdlr::action_timeline()
 {
@@ -67,11 +70,12 @@ Status::Code WebClientHdlr::action_timeline()
     limit = std::clamp<size_t>(limit, 1, act == "timeline_event" ? 60 : 12);
     try
     {
+        const auto filter = TimelineFilter::parse(vars->getStringValue("filter"));
         auto &database = *webClientParameters.timeline;
         if (refresh) database.invalidate();
         if (act == "timeline" || refresh)
         {
-            const auto page = database.feed(cursor, limit, vars->getStringValue("revision"));
+            const auto page = database.feed(cursor, limit, vars->getStringValue("revision"), filter);
             boost::json::array events;
             for (const auto &event : page.events)
             {
@@ -83,21 +87,26 @@ Status::Code WebClientHdlr::action_timeline()
                 {"revision", page.revision}, {"events", std::move(events)}, {"next", page.next}, {"has_more", page.hasMore},
                 {"total_events", page.totalEvents}, {"total_items", page.totalItems},
                 {"database_available", page.databaseAvailable}, {"error", page.error}, {"skipped", page.skipped},
-                {"gap_seconds", database.gapSeconds()}});
+                {"gap_seconds", database.gapSeconds()}, {"filter", filter.json()}});
         }
         if (act == "timeline_samples")
         {
-            const auto event = database.samples(vars->getStringValue("event"));
+            const auto event = database.samples(vars->getStringValue("event"), filter);
             auto json = eventJSON(event);
             json["samples"] = mediaJSON(event.samples);
             return finish(Status::Code::S_200_OK, "", json);
         }
-        const auto page = database.event(vars->getStringValue("event"), cursor, limit);
+        const auto page = database.event(vars->getStringValue("event"), cursor, limit, filter);
         auto json = eventJSON(page.event);
+        json["filter"] = filter.json();
         json["items"] = mediaJSON(page.items);
         json["next"] = page.next;
         json["has_more"] = page.hasMore;
         return finish(Status::Code::S_200_OK, "", json);
+    }
+    catch (const std::invalid_argument &error)
+    {
+        return finish(Status::Code::S_400_BAD_REQUEST, error.what());
     }
     catch (const TimelineDatabase::Error &error)
     {

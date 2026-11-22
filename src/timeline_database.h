@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "timeline_filter.h"
 
 /** @brief Provides timeline pages directly from digiKam through libMantids30.
  *
@@ -24,6 +25,11 @@
  * filename first, ImageInformation.creationDate second, and finally
  * Images.modificationDate. The original modification time and selected source
  * are exposed separately in Media.
+ *
+ * Validated TimelineFilter conditions run inside SQLite before grouping, counts,
+ * sampling and pagination. Date filters always use ImageInformation.creationDate,
+ * independently of the selected grouping date. Filter identity scopes revisions,
+ * so every event/gallery/sample request must repeat the same JSON conditions.
  *
  * @note Instances can be shared by HTTP workers: connections and query state
  *       belong to individual requests. Only the revision counter is shared.
@@ -72,7 +78,7 @@ public:
         bool databaseAvailable = false; ///< False when the database cannot be read.
         std::string error; ///< Availability error; folders remain usable independently.
         size_t skipped = 0; ///< Missing/unavailable files or invalid dates encountered.
-        size_t totalItems = 0; ///< Existing files under rootdir.
+        size_t totalItems = 0; ///< Existing files under rootdir matching the filter.
         size_t totalEvents = 0; ///< Events formed from those files.
         size_t next = 0; ///< Offset for the next feed request.
         bool hasMore = false; ///< Whether more events follow this page.
@@ -99,26 +105,29 @@ public:
      * @param cursor Number of events to skip.
      * @param limit Maximum events to return (1..12).
      * @param revision Previous page's revision; required for nonzero cursor.
+     * @param filter Validated SQL conditions applied before event grouping.
      * @return Requested events and totals, or an availability error in the page.
      * @throws Error For invalid pagination or a changed revision.
      */
-    FeedPage feed(size_t cursor = 0, size_t limit = 8, const std::string &revision = "") const;
+    FeedPage feed(size_t cursor = 0, size_t limit = 8, const std::string &revision = "", const TimelineFilter &filter = {}) const;
 
     /** @brief Query an event directly by the time bounds encoded in its ID.
      * @param id Event identifier returned by feed().
      * @param cursor Number of existing event files to skip.
      * @param limit Maximum files to retain (1..60).
+     * @param filter Same conditions used by feed(); mismatches invalidate the ID.
      * @return Current event information and the requested file page.
      * @throws Error For an invalid/stale ID, unavailable database or invalid cursor.
      */
-    EventPage event(const std::string &id, size_t cursor = 0, size_t limit = 60) const;
+    EventPage event(const std::string &id, size_t cursor = 0, size_t limit = 60, const TimelineFilter &filter = {}) const;
 
     /** @brief Select up to six distinct existing files using reservoir sampling.
      * @param id Event identifier returned by feed().
+     * @param filter Same conditions used by feed(), including for sample positions.
      * @return Event information and random files with their gallery positions.
      * @throws Error For an invalid/stale ID or unavailable database.
      */
-    Event samples(const std::string &id) const;
+    Event samples(const std::string &id, const TimelineFilter &filter = {}) const;
 
     /** @brief Invalidate client cursors after refresh/upload/delete; reads no files. */
     void invalidate() { generation.fetch_add(1); }

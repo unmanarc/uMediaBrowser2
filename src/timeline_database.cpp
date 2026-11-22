@@ -5,6 +5,7 @@
 #include <Mantids30/DB/SQLite3/sqlconnector_sqlite3.h>
 #include <Mantids30/Core/Memory/a_int64.h>
 #include <Mantids30/Core/Memory/a_string.h>
+#include <Mantids30/Core/Memory/a_double.h>
 
 #include <algorithm>
 #include <charconv>
@@ -222,21 +223,22 @@ public:
     /** @brief Open a URI-enforced read-only connection and begin a read transaction.
      * @param root Canonical HTTP root.
      * @param version Revision counter captured by the calling API method.
+     * @param filter Validated conditions included in SQL scope and revision identity.
      * @throws Error If discovery, connection, schema access or URI support fails.
      */
-    Reader(const std::string &root, uint64_t version) : root(root), database(findDatabase(root))
+    Reader(const std::string &root, uint64_t version, const TimelineFilter &filter) : root(root), database(findDatabase(root))
     {
         if (database.empty()) throw Error(ErrorKind::Unavailable, "No digikam4.db found in --rootdir or its ancestors.");
         if (!sqlite3_compileoption_used("USE_URI"))
             throw Error(ErrorKind::Unavailable, "SQLite URI support is required for read-only digiKam access.");
         stamp = fingerprint(database);
-        revision = std::to_string(std::hash<std::string>{}(stamp)) + "-" + std::to_string(version);
+        revision = std::to_string(std::hash<std::string>{}(stamp + filter.identity())) + "-" + std::to_string(version);
         connection.setThrowCPPErrorOnQueryFailure(false);
         // libMantids30 uses sqlite3_open; USE_URI makes mode=ro an engine-level
         // restriction even if the operating-system user can write this file.
         if (!connection.connect("file:" + uriEncode(database.string()) + "?mode=ro") || !connection.qExecuteEx("BEGIN"))
             throw Error(ErrorKind::Unavailable, "Cannot open digiKam database in read-only mode.");
-        prepareScope();
+        prepareScope(filter);
         // Closing the connection automatically ends this read-only transaction.
     }
 
@@ -404,13 +406,74 @@ public:
     std::string revision; ///< Token for the currently open database transaction.
 
 private:
+    /** @brief Compile validated rules into parameterized SQL over Images i/info.
+     * EXISTS keeps tag/metadata comparisons independent and avoids duplicate media
+     * for multiple matching tags. Negation complements a total boolean predicate,
+     * including absent rows/NULL values. Text contains uses instr, so '%' and '_'
+     * are literal characters. Metadata tables are only referenced when requested.
+     * @param filter Immutable allowlisted conditions; never raw client JSON.
+     * @return Parenthesized AND/OR expression, or 1 for an empty filter.
+     */
+    std::string filterSQL(const TimelineFilter &filter)
+    {
+        return rulesSQL(filter.rules(), true);
+    }
+
+    /** @brief Compile each subfilter in parentheses; the main list always uses AND. */
+    std::string rulesSQL(const std::vector<TimelineFilter::Rule> &rules, bool all)
+    {
+        std::string result;
+        for (const auto &rule : rules)
+        {
+            if (!result.empty()) result += all ? " AND " : " OR ";
+            if (rule.composed)
+            {
+                result += rulesSQL(rule.rules, rule.all);
+                continue;
+            }
+            const std::string key = ":filter" + std::to_string(bindings.size());
+            const std::string comparison = rule.op == "gt" ? ">" : rule.op == "lt" ? "<" : "=";
+            std::string predicate;
+            if (rule.field == "tag")
+            {
+                bindings[key] = std::make_shared<STRING>(std::string(rule.value.as_string()));
+                predicate = "EXISTS (SELECT 1 FROM ImageTags it JOIN Tags t ON t.id=it.tagid WHERE it.imageid=i.id AND t.name=" + key + " COLLATE BINARY)";
+            }
+            else if (rule.field == "creationDate")
+            {
+                bindings[key] = std::make_shared<STRING>(std::string(rule.value.as_string()));
+                predicate = "COALESCE((" + isoTimestampSQL("info.creationDate") + ") " + comparison + " (" + isoTimestampSQL(key) + "),0)";
+            }
+            else
+            {
+                // Rule construction is private to TimelineFilter::parse: the
+                // column and operator below can only come from its allowlist.
+                const std::string column = "metadata.\"" + rule.field + "\"";
+                if (rule.op == "contains")
+                {
+                    bindings[key] = std::make_shared<STRING>(std::string(rule.value.as_string()));
+                    predicate = "instr(lower(" + column + "),lower(" + key + "))>0";
+                }
+                else
+                {
+                    bindings[key] = std::make_shared<DOUBLE>(rule.value.to_number<double>());
+                    predicate = column + comparison + key;
+                }
+                predicate = "EXISTS (SELECT 1 FROM ImageMetadata metadata WHERE metadata.imageid=i.id AND " + predicate + ")";
+            }
+            result += rule.negate ? "NOT (" + predicate + ")" : "(" + predicate + ")";
+        }
+        return result.empty() ? "1" : "(" + result + ")";
+    }
+
     /** @brief Build a bound SQL scope from collection metadata, without loading Images.
      * Only the small AlbumRoots table is read here. Album joins, rootdir filtering,
      * ISO-date conversion and result ordering are performed by SQLite. The selected
      * timestamp is filename first, then ImageInformation.creationDate, then
      * Images.modificationDate; all ordering/range queries share that expression.
+     * @param filter Validated SQL conditions applied to image_dates before grouping.
      */
-    void prepareScope()
+    void prepareScope(const TimelineFilter &filter)
     {
         std::string collections;
         {
@@ -435,6 +498,7 @@ private:
         if (collections.empty()) collections = "(NULL,NULL)";
         bindings[":root"] = std::make_shared<STRING>(root);
         bindings[":prefix"] = std::make_shared<STRING>(root == "/" ? "/" : root + "/");
+        const auto predicate = filterSQL(filter);
         // These unbounded LIMIT/OFFSET clauses keep the date CTEs as streaming
         // subqueries. Without that flattening barrier SQLite substitutes the
         // filename/date expressions repeatedly into COALESCE, ORDER BY and
@@ -460,6 +524,7 @@ private:
                 WHERE (a.folder=:root OR substr(a.folder,1,length(:prefix))=:prefix)
                   AND i.name IS NOT NULL AND i.name NOT IN ('','.','..')
                   AND instr(i.name,'/')=0 AND instr(i.name,char(0))=0
+                  AND )SQL" + predicate + R"SQL(
                 LIMIT -1 OFFSET 0
             ), filename_times AS (
                 SELECT path, folder, size, creation_date, modification_date,
@@ -517,14 +582,14 @@ TimelineDatabase::TimelineDatabase(std::string root, int64_t gapSeconds)
     : root(fs::canonical(root).string()), gap(std::max<int64_t>(1, gapSeconds)),
       generation(static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())) {}
 
-TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision) const
+TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision, const TimelineFilter &filter) const
 {
     if (!limit || limit > 12) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     if (cursor && revision.empty()) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
     const auto version = generation.load();
     try
     {
-        Reader reader(root, version);
+        Reader reader(root, version, filter);
         reader.requireRevision(revision);
         auto page = reader.readFeed(cursor, limit, gap);
         reader.verify();
@@ -541,21 +606,21 @@ TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, c
     }
 }
 
-TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_t cursor, size_t limit) const
+TimelineDatabase::EventPage TimelineDatabase::event(const std::string &id, size_t cursor, size_t limit, const TimelineFilter &filter) const
 {
     if (!limit || limit > 60) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     const auto version = generation.load();
-    Reader reader(root, version);
+    Reader reader(root, version, filter);
     auto page = reader.readEvent(reader.decodeEvent(id), cursor, limit, false);
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
     return page;
 }
 
-TimelineDatabase::Event TimelineDatabase::samples(const std::string &id) const
+TimelineDatabase::Event TimelineDatabase::samples(const std::string &id, const TimelineFilter &filter) const
 {
     const auto version = generation.load();
-    Reader reader(root, version);
+    Reader reader(root, version, filter);
     auto event = reader.readEvent(reader.decodeEvent(id), 0, 0, true).event;
     reader.verify();
     if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
