@@ -168,10 +168,11 @@ public:
      * @param limit Maximum events to return (1..12).
      * @param revision Previous page's revision; required for nonzero cursor.
      * @param filter Validated SQL conditions applied before event grouping.
+     * @param ascending Return oldest events first instead of newest first.
      * @return Requested events and totals, or an availability error in the page.
      * @throws Error For invalid pagination or a changed revision.
      */
-    FeedPage feed(size_t cursor = 0, size_t limit = 8, const std::string &revision = "", const TimelineFilter &filter = {}) const;
+    FeedPage feed(size_t cursor = 0, size_t limit = 8, const std::string &revision = "", const TimelineFilter &filter = {}, bool ascending = false) const;
 
     /** @brief Query an event directly by the time bounds encoded in its ID.
      * @param id Event identifier returned by feed().

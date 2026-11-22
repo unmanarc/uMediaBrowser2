@@ -278,9 +278,10 @@ public:
      * @param byFolder Whether to use gallery ordering instead of feed ordering.
      * @param consume Callback invoked for one temporary Media at a time.
      * @param skipped Receives the number of invalid/missing candidates.
+     * @param ascending Stream oldest first when not using gallery ordering.
      * @return Number of SQL candidates, including skipped records.
      */
-    size_t walk(const Event *range, bool byFolder, const std::function<void(Media)> &consume, size_t &skipped)
+    size_t walk(const Event *range, bool byFolder, const std::function<void(Media)> &consume, size_t &skipped, bool ascending = false)
     {
         auto input = bindings;
         std::string sql = scope + " SELECT path, folder, timestamp, size, mtime, date_source, ";
@@ -293,7 +294,7 @@ public:
             input[":start"] = std::make_shared<INT64>(range->start);
             input[":end"] = std::make_shared<INT64>(range->end);
         }
-        sql += byFolder ? " ORDER BY folder, timestamp DESC, path" : " ORDER BY timestamp DESC, path";
+        sql += byFolder ? " ORDER BY folder, timestamp DESC, path" : ascending ? " ORDER BY timestamp ASC, path" : " ORDER BY timestamp DESC, path";
         STRING path, folder, dateSource, tagIds;
         INT64 timestamp, size, modified;
         auto query = connection.qSelect(sql, input, {&path, &folder, &timestamp, &size, &modified, &dateSource, &tagIds});
@@ -337,9 +338,10 @@ public:
      * @param cursor Number of complete events to skip.
      * @param limit Maximum event summaries to retain.
      * @param gap Inactivity threshold starting a new event; equality starts a new group.
+     * @param ascending Return oldest events first.
      * @return Requested page with exact existing-file and event totals.
      */
-    FeedPage readFeed(size_t cursor, size_t limit, int64_t gap)
+    FeedPage readFeed(size_t cursor, size_t limit, int64_t gap, bool ascending)
     {
         FeedPage page;
         page.revision = revision;
@@ -355,16 +357,18 @@ public:
             current = Event{};
         };
         walk(nullptr, false, [&](Media item) {
-            if (!current.count || previous - item.timestamp >= gap)
+            if (!current.count || (ascending ? item.timestamp - previous : previous - item.timestamp) >= gap)
             {
                 finish();
                 ++page.totalEvents;
-                current.end = item.timestamp;
+                current.start = current.end = item.timestamp;
             }
-            current.start = previous = item.timestamp;
+            current.start = std::min(current.start, item.timestamp);
+            current.end = std::max(current.end, item.timestamp);
+            previous = item.timestamp;
             ++current.count;
             ++page.totalItems;
-        }, page.skipped);
+        }, page.skipped, ascending);
         finish();
         if (cursor > page.totalEvents) throw Error(ErrorKind::InvalidArgument, "Invalid cursor");
         page.next = cursor + page.events.size();
@@ -887,7 +891,7 @@ bool TimelineDatabase::allowsFile(const std::string &path) const
     return allowed;
 }
 
-TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision, const TimelineFilter &filter) const
+TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, const std::string &revision, const TimelineFilter &filter, bool ascending) const
 {
     if (!limit || limit > 12) throw Error(ErrorKind::InvalidArgument, "Invalid page size");
     if (cursor && revision.empty()) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
@@ -896,7 +900,7 @@ TimelineDatabase::FeedPage TimelineDatabase::feed(size_t cursor, size_t limit, c
     {
         Reader reader(root, version, effectiveFilter(filter), tagExclusions);
         reader.requireRevision(revision);
-        auto page = reader.readFeed(cursor, limit, gap);
+        auto page = reader.readFeed(cursor, limit, gap, ascending);
         reader.verify();
         if (generation.load() != version) throw Error(ErrorKind::Stale, "Timeline changed. Refresh to continue.");
         return page;

@@ -103,10 +103,13 @@ Status::Code WebClientHdlr::action_timeline()
             if (rescan) result["scanned_files"] = scanned;
             return finish(Status::Code::S_200_OK, "", result);
         }
+        const auto order = vars->getStringValue("order");
+        if (!order.empty() && order != "asc" && order != "desc")
+            return finish(Status::Code::S_400_BAD_REQUEST, "Invalid timeline order");
         if (refresh) database.invalidate();
         if (act == "timeline" || refresh)
         {
-            const auto page = database.feed(cursor, limit, vars->getStringValue("revision"), filter);
+            const auto page = database.feed(cursor, limit, vars->getStringValue("revision"), filter, order == "asc");
             boost::json::array events;
             for (const auto &event : page.events)
             {
@@ -115,7 +118,7 @@ Status::Code WebClientHdlr::action_timeline()
                 events.push_back(std::move(json));
             }
             return finish(Status::Code::S_200_OK, "", boost::json::object{
-                {"revision", page.revision}, {"events", std::move(events)}, {"next", page.next}, {"has_more", page.hasMore},
+                {"order", order == "asc" ? "asc" : "desc"}, {"revision", page.revision}, {"events", std::move(events)}, {"next", page.next}, {"has_more", page.hasMore},
                 {"total_events", page.totalEvents}, {"total_items", page.totalItems},
                 {"database_available", page.databaseAvailable}, {"error", page.error}, {"skipped", page.skipped},
                 {"gap_seconds", database.gapSeconds()}, {"filter", filter.json()},

@@ -131,7 +131,10 @@ timeline shows an error and the folder browser continues to work as usual.
 
 The feed initially requests 8 events. Each story shows at most 6 random thumbnails;
 one visible story refreshes its sample every 12 seconds. Scrolling or **More +**
-loads older events. **Open event** shows a gallery with folder separators, grid/list
+loads more events in the selected order. The **Order** selector switches between
+**Newest first (DESC)** (the default) and **Oldest first (ASC)**. Changing order
+restarts pagination and preserves the filters; the URL retains the selection on reload.
+**Open event** shows a gallery with folder separators, grid/list
 controls and 60 items per page. The carousel can traverse the whole event,
 including files beyond the gallery's loaded pages.
 
@@ -338,7 +341,7 @@ Additional JSON services (same authentication as the folder browser):
 
 | Request | Result |
 | --- | --- |
-| `GET ?act=timeline&cursor=0&limit=8` | Newest events, samples, revision and next cursor; pass `revision` on subsequent pages |
+| `GET ?act=timeline&cursor=0&limit=8` | Events, samples, revision and next cursor; `order=desc` (default) or `order=asc`; pass the same order and `revision` on subsequent pages |
 | `GET ?act=timeline_event&event=ID&cursor=0&limit=60` | Event items ordered by folder, with global event positions |
 | `GET ?act=timeline_samples&event=ID` | Up to six random items from an event |
 | `POST ?act=timeline_refresh` | Advance the client revision and read the first page; requires the usual CSRF cookie/header |

@@ -29,6 +29,7 @@ a:hover{text-decoration:underline;}
 #timelineMain{overflow:auto;min-height:0;scrollbar-gutter:stable;}
 .timeline-content{max-width:1060px;margin:auto;padding:32px 28px;}
 .timeline-intro{margin-bottom:28px;}
+.timeline-order{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:16px 0;color:var(--fg-dim);font-size:13px;}
 .eyebrow{text-transform:uppercase;letter-spacing:.14em;font-size:11px;color:var(--accent2);font-weight:600;}
 h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-height:1.15;margin:10px 0;}
 .subtle{color:var(--fg-dim);}
@@ -127,6 +128,7 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
    <div id="pageMessage" role="status"></div>
    <section id="feedView">
     <div class="timeline-intro"><span class="eyebrow">Your library, in moments</span><h1>Timeline</h1><p class="subtle">A story in every day. Rediscover your pictures and videos, together.</p></div>
+    <div class="timeline-order"><label for="timelineOrder">Order</label> <select class="sel" id="timelineOrder"><option value="desc">Newest first (DESC)</option><option value="asc">Oldest first (ASC)</option></select></div>
     <button class="btn" id="filterSummary" hidden></button>
     <div id="stories"></div>
    </section>
@@ -159,6 +161,8 @@ __SHARED_THUMB_JS__
 __TIMELINE_FILTER_JS__
 
 var main = $('#timelineMain');
+var timelineOrder = new URLSearchParams(location.search).get('order') === 'asc' ? 'asc' : 'desc';
+$('#timelineOrder').value = timelineOrder;
 var feed = newFeed();
 var eventView = null;
 var mode = 'feed';
@@ -167,7 +171,7 @@ var lastGrid = null;
 var eventSize = 128;
 var rotating = false;
 var visibleStories = new Set();
-function newFeed(){ return {cursor:0, more:true, busy:false, loaded:false, revision:'', scroll:0, stale:false, error:'', status:'', note:''}; }
+function newFeed(){ return {order:timelineOrder, cursor:0, more:true, busy:false, loaded:false, revision:'', scroll:0, stale:false, error:'', status:'', note:''}; }
 function active(){ return mode === 'feed' ? feed : eventView; }
 
 async function data(url, options){
@@ -333,12 +337,12 @@ async function loadFeed(refresh){
   view.busy = true; view.error = ''; updateMore();
   try {
     var url = refresh ? '?act=timeline_refresh' : '?act=timeline&cursor=' + view.cursor + (view.revision ? '&revision=' + enc(view.revision) : '');
-    var page = await data(filteredURL(url),refresh ? {method:'POST'} : undefined);
+    var page = await data(filteredURL(url + '&order=' + view.order),refresh ? {method:'POST'} : undefined);
     if (view !== feed) return;
     appliedFilter = page.filter; updateFilterIndicator(); updatePrefilterNotice(page);
     view.revision = page.revision; view.cursor = page.next; view.more = page.has_more; view.loaded = true;
     page.events.forEach(appendStory);
-    view.status = page.total_events.toLocaleString() + ' events · ' + page.total_items.toLocaleString() + ' items · Newest first';
+    view.status = page.total_events.toLocaleString() + ' events · ' + page.total_items.toLocaleString() + ' items · ' + (view.order === 'asc' ? 'Oldest first' : 'Newest first');
     view.note = !page.total_items ? (filterJSON ? 'No pictures or videos match these filters. Edit the conditions or reset all filters to see your library.' : 'No pictures or videos in this library yet.') : '';
     if (page.error) view.note = page.error;
     if (page.skipped) view.note += (view.note ? '\n' : '') + 'Some database entries were skipped because their files are missing or unavailable.';
@@ -441,7 +445,7 @@ function refreshTimeline(invalidate){
   mode = 'feed'; eventView = null;
   clearThumbs($('#eventItems'));
   $('#feedView').hidden = false; $('#eventView').hidden = true;
-  history.replaceState(null,'',location.pathname + '?view=timeline' + (filterJSON ? '&filter=' + enc(filterJSON) : ''));
+  history.replaceState(null,'',location.pathname + '?view=timeline&order=' + timelineOrder + (filterJSON ? '&filter=' + enc(filterJSON) : ''));
   main.scrollTop = 0; message(''); loadFeed(invalidate !== false);
 }
 function loadMore(){
@@ -451,6 +455,10 @@ function loadMore(){
   else if (mode === 'feed') loadFeed();
   else loadEvent();
 }
+$('#timelineOrder').onchange = function(){
+  timelineOrder = this.value;
+  refreshTimeline(false);
+};
 $('#btnMore').onclick = loadMore;
 $('#btnRefreshTimeline').onclick = function(){ refreshTimeline(); };
 function setEventList(list){

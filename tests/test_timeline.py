@@ -644,6 +644,32 @@ class TimelineTests(unittest.TestCase):
                 db.execute("DELETE FROM ImageInformation WHERE imageid IN (SELECT i.id FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath='/Familiar/Priority')")
                 db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Priority')")
 
+    def test_feed_order_with_pagination_and_filters(self):
+        with self.filter_library():
+            for query in ({}, {'filter': self.filter_json(dict(field='tag', op='eq', value='Holiday'))}):
+                descending = []
+                ascending = []
+                for order, events in [('desc', descending), ('asc', ascending)]:
+                    page = self.api(act='timeline', order=order, limit=3, **query)
+                    total = page['total_events']
+                    while True:
+                        self.assertEqual(page['order'], order)
+                        events.extend(page['events'])
+                        if not page['has_more']: break
+                        page = self.api(act='timeline', order=order, limit=3,
+                                        cursor=page['next'], revision=page['revision'], **query)
+                    self.assertEqual(len(events), total)
+                # IDs and bounds must survive reversing the traversal, including
+                # multi-image events and the exact inactivity threshold boundary.
+                self.assertEqual([(e['id'], e['start'], e['end'], e['count']) for e in ascending],
+                                 [(e['id'], e['start'], e['end'], e['count']) for e in reversed(descending)])
+                event = next(e for e in ascending if e['count'])
+                self.assertEqual(self.api(act='timeline_event', event=event['id'], **query)['count'], event['count'])
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                self.api(act='timeline', order='invalid')
+            self.assertEqual(error.exception.code, 400)
+            error.exception.close()
+
     def test_live_database_changes_without_refresh(self):
         before = self.api(act='timeline')
         photo = self.photo('Live/live.jpg', 2_000_000_000)
