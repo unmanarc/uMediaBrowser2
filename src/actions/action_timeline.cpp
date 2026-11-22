@@ -89,6 +89,8 @@ Status::Code WebClientHdlr::action_timeline()
             TimelineFilter::parsePrefilter(boost::json::serialize(effective.json()));
             return finish(Status::Code::S_200_OK, "", effective.json());
         }
+        if (act == "timeline_filter_values")
+            return finish(Status::Code::S_200_OK, "", boost::json::object{{"values", database.filterValues()}});
         if (act == "timeline_tags" || rescan)
         {
             size_t scanned = 0;

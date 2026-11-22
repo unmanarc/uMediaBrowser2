@@ -272,6 +272,10 @@ class TimelineTests(unittest.TestCase):
     def test_filters_metadata_operators_and_boolean_combinations(self):
         with self.filter_library():
             cases = [
+                ([dict(field='make', op='eq', value='Canon')], 'all', {'IMG_20300101-100000-a.jpg'}),
+                ([dict(field='model', op='eq', value='Z_8')], 'all', {'b.jpg'}),
+                ([dict(field='model', op='eq', value='Z')], 'all', set()),
+                ([dict(field='lens', op='eq', value='RF 24-70%')], 'all', {'IMG_20300101-100000-a.jpg','d.jpg'}),
                 ([dict(field='make', op='contains', value='canon')], 'all', {'IMG_20300101-100000-a.jpg','d.jpg'}),
                 ([dict(field='lens', op='contains', value='%')], 'all', {'IMG_20300101-100000-a.jpg','d.jpg'}),
                 ([dict(field='model', op='contains', value='_')], 'all', {'b.jpg'}),
@@ -288,6 +292,40 @@ class TimelineTests(unittest.TestCase):
                     self.assertEqual({i['name'] for i in items}, expected)
             negative = self.filter_json(dict(field='make', op='contains', value='Canon', negate=True))
             self.assertIn('c.jpg', {i['name'] for i in self.filtered_items(negative)})
+
+    def test_metadata_choices_scope_snapshot_and_exact_values(self):
+        with self.filter_library():
+            # New fixture files enter the choices only after the shared path rescan.
+            self.assertEqual(self.api(act='timeline_filter_values')['values'], dict(make=[], model=[], lens=[]))
+            self.refresh('timeline_tags_refresh')
+            original = self.database.read_bytes()
+            values = self.api(act='timeline_filter_values')['values']
+            self.assertEqual(values, dict(make=['CANON', 'Canon', 'Nikon', 'Sony'],
+                                         model=['EOS R5', 'EOS R6', 'ILCE', 'Z_8'],
+                                         lens=['35 mm', '50 mm', 'RF 24-70%']))
+            self.assertEqual(self.database.read_bytes(), original)
+            # User conditions do not hide alternatives while editing another condition.
+            query = self.filter_json(dict(field='make', op='eq', value='Canon'))
+            self.assertEqual(self.api(act='timeline_filter_values', filter=query)['values'], values)
+            try:
+                with sqlite_connection(self.database) as db:
+                    # Exclude out-of-root, missing and symlink paths, and invalid text.
+                    for name in ('outside.jpg', 'missing.jpg', 'escape.jpg'):
+                        db.execute('INSERT INTO ImageMetadata(imageid,make) SELECT id,? FROM Images WHERE name=?',
+                                   (name, name))
+                    db.execute("UPDATE ImageMetadata SET model=' \t\n',lens=? WHERE model='ILCE'", ('x'*257,))
+                    db.execute("UPDATE ImageMetadata SET lens=? WHERE model='EOS R6'", ('x\x00y',))
+                    db.execute("UPDATE ImageMetadata SET lens=? WHERE model='Z_8'", (' <lens> & ñ %_ ',))
+                values = self.api(act='timeline_filter_values')['values']
+                self.assertEqual(values['make'], ['CANON', 'Canon', 'Nikon', 'Sony'])
+                self.assertEqual(values['model'], ['EOS R5', 'EOS R6', 'Z_8'])
+                self.assertEqual(values['lens'], [' <lens> & ñ %_ ', 'RF 24-70%'])
+                exact = self.filter_json(dict(field='lens', op='eq', value=' <lens> & ñ %_ '))
+                self.assertEqual({i['name'] for i in self.filtered_items(exact)}, {'b.jpg'})
+            finally:
+                with sqlite_connection(self.database) as db:
+                    db.execute("DELETE FROM ImageMetadata WHERE imageid IN (SELECT id FROM Images WHERE name IN ('outside.jpg','missing.jpg','escape.jpg'))")
+        self.refresh('timeline_tags_refresh')
 
     def test_filters_use_creation_date_without_fallback(self):
         with self.filter_library():
@@ -386,7 +424,7 @@ class TimelineTests(unittest.TestCase):
                          dict(valid,field='make\" OR 1=1 --'), dict(valid,op='eq OR 1=1 --'), dict(valid,op='contains'),
                          dict(valid,value=''), dict(valid,value='   '), dict(valid,value='x'*257), dict(valid,value='x\x00y'),
                          dict(valid,value=5), dict(valid,negate='true'), dict(valid,extra=True),
-                         dict(field='make',op='eq',value='Canon'), dict(field='sensitivity',op='gt',value='400'),
+                         dict(field='make',op='gt',value='Canon'), dict(field='sensitivity',op='gt',value='400'),
                          dict(field='sensitivity',op='gt',value=True), dict(field='sensitivity',op='contains',value=400),
                          dict(field='creationDate',op='eq',value='2020-01-01')]
         invalid_rules += [dict(field='creationDate',op='gt',value=date) for date in

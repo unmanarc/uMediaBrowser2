@@ -155,7 +155,8 @@ event tags are deduplicated by ID and sorted by path, following the active filte
 
 The **filter icon** in the Timeline header opens a full-screen condition editor.
 Add a condition, choose its field and comparison, then enter a value or select a
-tag from the list. Each
+tag, camera manufacturer, camera model or lens from a dropdown. Camera and lens
+options come from the database and match the exact stored value. Each
 condition can be removed or changed from **Include** to **Exclude (NOT)**.
 The main list always combines items with **AND**. Use **Add group (OR / AND)**
 to add a composed subfilter as one item. Inside each group, choose
@@ -238,6 +239,14 @@ snapshot until the replacement is ready; a failed scan preserves it. The ordinar
 timeline refresh keeps its existing behavior and does not rescan the tag snapshot.
 Saved conditions referring to a removed tag remain visible as disabled options.
 
+Camera manufacturer, model and lens dropdowns show distinct, nonblank database
+values for files in the same existing-path snapshot, respecting `--rootdir` and
+the mandatory prefilter. Options reload when opening the editor; **↻ Rescan gallery**
+also updates the file snapshot and all open dropdowns. A field with no available
+values shows an empty list. Saved unavailable values remain visible as disabled
+options. Existing `contains` conditions keep their substring matching until a
+new dropdown value is selected, which switches the condition to exact matching.
+
 Use `--tag-exclude-file /path/to/hidden-tags.txt` to hide additional tags from the
 picker and informational badges. Each nonblank line is a case-sensitive ECMAScript regular expression
 searched against the **tag name**, independently of its hierarchy. Use `^` and `$`
@@ -270,7 +279,7 @@ Supported conditions:
 | --- | --- | --- |
 | `tag` | `eq` | Exact, case-sensitive `Tags.name` selected from tags assigned to existing files. A name shared by multiple branches matches any branch, without duplicate photos |
 | `creationDate` | `gt`, `lt` | Strictly after/before `ImageInformation.creationDate`, without falling back to filename/modification date |
-| `make`, `model`, `lens` | `contains` | Literal substring, ASCII case-insensitive; `%` and `_` have no wildcard meaning |
+| `make`, `model`, `lens` | `eq`, `contains` | Dropdowns use exact, case-sensitive `eq`; `contains` remains available in JSON for literal, ASCII case-insensitive substrings. `%` and `_` have no wildcard meaning |
 | `aperture`, `focalLength`, `focalLength35`, `exposureTime`, `exposureProgram`, `exposureMode`, `sensitivity`, `flash`, `whiteBalance`, `whiteBalanceColorTemperature`, `meteringMode`, `subjectDistance`, `subjectDistanceCategory` | `gt`, `lt`, `eq` | Numeric comparisons against the corresponding `ImageMetadata` column |
 
 The field names and types follow the [official digiKam SQLite schema](https://github.com/KDE/digikam/blob/master/core/data/database/dbconfig.xml.cmake.in).
@@ -334,6 +343,7 @@ Additional JSON services (same authentication as the folder browser):
 | `GET ?act=timeline_samples&event=ID` | Up to six random items from an event |
 | `POST ?act=timeline_refresh` | Advance the client revision and read the first page; requires the usual CSRF cookie/header |
 | `GET ?act=timeline_tags` | Nonblank tags assigned to files in the memory snapshot, with IDs, parent IDs, names, branch paths and distinct file counts; no disk rescan |
+| `GET ?act=timeline_filter_values` | Sorted distinct `make`, `model` and `lens` arrays under `values`, scoped to existing paths and the mandatory prefilter; no disk rescan |
 | `POST ?act=timeline_tags_refresh` | Rebuild the existing-path snapshot and return the updated tag catalog plus `scanned_files`; requires the usual CSRF cookie/header |
 | `GET ?act=current_filter` | Export the mandatory prefilter AND optional `filter` conditions as reusable prefilter JSON |
 

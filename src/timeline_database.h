@@ -119,6 +119,12 @@ public:
     /** @brief Query tags through SQL joins, without filesystem existence checks. */
     std::vector<Tag> tags() const;
 
+    /** @brief Distinct camera text values for existing paths, scoped to the mandatory prefilter.
+     * Reuses the tag path snapshot; reads metadata afresh without a filesystem scan.
+     * @return Object mapping allowlisted text fields to sorted arrays of nonblank values.
+     */
+    boost::json::object filterValues() const;
+
     /** @brief Existing matching files and their ancestor directories, as URI paths.
      * Includes undated files. A parent stays visible while any descendant matches.
      */

@@ -461,6 +461,38 @@ public:
         checkQuery(query, true);
     }
 
+    /** @brief Read bounded text values through the same path scope as the tag picker. */
+    boost::json::object readFilterValues(const std::string &memoryURI)
+    {
+        checkQuery(connection.qExecute("ATTACH DATABASE :uri AS mem", {{":uri", std::make_shared<STRING>(memoryURI)}}));
+        boost::json::object result;
+        for (const auto &entry : TimelineFilter::fields())
+        {
+            const auto &field = entry.as_object();
+            if (field.at("type") != "text") continue;
+            const std::string name(field.at("field").as_string());
+            boost::json::array values;
+            // Metadata is optional in older databases; an empty picker is still usable.
+            if (connection.dbTableExist("ImageMetadata"))
+            {
+                const std::string column = "m.\"" + name + "\"";
+                STRING value;
+                auto query = connection.qSelect(scope + " SELECT DISTINCT " + column + " COLLATE BINARY" +
+                    " FROM image_dates i JOIN mem.existing_files f ON f.path=i.path"
+                    " JOIN ImageMetadata m ON m.imageid=i.imageid WHERE typeof(" + column + ")='text'"
+                    " AND length(CAST(" + column + " AS BLOB)) BETWEEN 1 AND 256"
+                    " AND length(trim(" + column + ",char(9,10,11,12,13,32)))>0"
+                    " AND instr(" + column + ",char(0))=0 ORDER BY " + column + " COLLATE BINARY",
+                    bindings, {&value});
+                checkQuery(query);
+                while (query->step()) values.emplace_back(value.getValue());
+                checkQuery(query, true);
+            }
+            result[name] = std::move(values);
+        }
+        return result;
+    }
+
     /** @brief Join the current digiKam rows to an immutable existing-path table.
      * Ancestors provide labels only; a parent without assigned files is not an
      * option. Missing dates do not disqualify a file from the tag catalog.
@@ -597,6 +629,11 @@ private:
                 {
                     bindings[key] = std::make_shared<STRING>(std::string(rule.value.as_string()));
                     predicate = "instr(lower(" + column + "),lower(" + key + "))>0";
+                }
+                else if (rule.value.is_string())
+                {
+                    bindings[key] = std::make_shared<STRING>(std::string(rule.value.as_string()));
+                    predicate = column + "=" + key + " COLLATE BINARY";
                 }
                 else
                 {
@@ -808,6 +845,19 @@ std::vector<TimelineDatabase::Tag> TimelineDatabase::tags() const
     }
     Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
     auto result = reader.readTags(snapshot->uri);
+    reader.verify();
+    return result;
+}
+
+boost::json::object TimelineDatabase::filterValues() const
+{
+    std::shared_ptr<FileSnapshot> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(snapshotMutex);
+        snapshot = fileSnapshot;
+    }
+    Reader reader(root, generation.load(), effectiveFilter(), tagExclusions);
+    auto result = reader.readFilterValues(snapshot->uri);
     reader.verify();
     return result;
 }

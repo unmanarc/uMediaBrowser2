@@ -139,6 +139,16 @@ class PrefilterTests(unittest.TestCase):
                 self.assertNotIn('parent', {n['name'] for n in server.api(act='tree', path='/Prefilter')['nodes']})
             finally: path.write_bytes(saved)
 
+    def test_metadata_choices_respect_prefilter(self):
+        with timeline.sqlite_connection(self.library.database) as db:
+            db.execute("UPDATE ImageMetadata SET model='Allowed', lens='Visible lens' WHERE imageid IN (SELECT imageid FROM ImageTags WHERE tagid=9800)")
+            db.execute("UPDATE ImageMetadata SET model='Hidden', lens='Hidden lens' WHERE imageid IN (SELECT imageid FROM ImageTags WHERE tagid=9801)")
+        with self.server() as server:
+            values = server.api(act='timeline_filter_values')['values']
+            self.assertEqual(values, dict(make=['Canon'], model=['Allowed'], lens=['Visible lens']))
+        with self.server(dict(rules=[dict(self.rule, value='Absent')])) as server:
+            self.assertEqual(server.api(act='timeline_filter_values')['values'], dict(make=[], model=[], lens=[]))
+
     def test_composed_prefilter_and_user_groups(self):
         prefilter = dict(rules=[dict(match='any', rules=[self.rule, dict(self.rule, value='Absent')]),
                                dict(field='sensitivity', op='gt', value=150)])

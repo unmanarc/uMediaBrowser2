@@ -47,6 +47,7 @@ class TimelineFilterUITests(unittest.TestCase):
         self.page.locator('#btnTimelineFilter').click()
         self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
         self.page.wait_for_function('filterTags !== null && !filterTagsRequest')
+        self.page.wait_for_function('filterValues !== null && !filterValuesRequest')
 
     def add_rule(self, field, value, op=None, negate=False, group=None):
         if group is None: self.page.locator('#filterAdd').click()
@@ -54,7 +55,7 @@ class TimelineFilterUITests(unittest.TestCase):
         row = self.page.locator('.filter-rule').last if group is None else group.locator(':scope > .filter-group-rules > .filter-rule').last
         row.get_by_label('Field', exact=True).select_option(field)
         if op: row.get_by_label('Comparison', exact=True).select_option(op)
-        if field == 'tag': row.get_by_label('Value', exact=True).select_option(value)
+        if field in ('tag', 'make', 'model', 'lens'): row.get_by_label('Value', exact=True).select_option(value)
         else: row.get_by_label('Value', exact=True).fill(value)
         if negate: row.get_by_label('Include or exclude condition').select_option('true')
         return row
@@ -143,6 +144,66 @@ class TimelineFilterUITests(unittest.TestCase):
         self.open_editor()
         self.assertEqual(self.page.locator('.filter-tag-select').input_value(), '<script>does not exist</script>')
         self.assertTrue(self.page.locator('.filter-tag-select option:checked').is_disabled())
+
+    def test_metadata_dropdowns_and_saved_text_filters(self):
+        self.open_editor()
+        for field, selected, choices in [
+            ('make', 'Nikon', ['CANON', 'Canon', 'Nikon', 'Sony']),
+            ('model', 'Z_8', ['EOS R5', 'EOS R6', 'ILCE', 'Z_8']),
+            ('lens', '50 mm', ['35 mm', '50 mm', 'RF 24-70%']),
+        ]:
+            row = self.add_rule(field, selected)
+            self.assertEqual(row.locator('input').count(), 0)
+            self.assertEqual(row.locator('.filter-metadata-select option').all_text_contents(), ['Choose a value…'] + choices)
+            self.assertEqual(row.get_by_label('Comparison', exact=True).input_value(), 'eq')
+        self.apply()
+        self.assertIn('1 items', self.page.locator('#timelineStatus').inner_text())
+        self.page.reload(); self.page.wait_for_function('feed.loaded')
+        self.open_editor()
+        self.assertEqual(self.page.locator('.filter-metadata-select').evaluate_all('(els) => els.map(el => el.value)'), ['Nikon', 'Z_8', '50 mm'])
+        query = self.server.filter_json(dict(field='model', op='contains', value='EOS'))
+        self.page.goto(self.server.url+'?'+urllib.parse.urlencode(dict(view='timeline', filter=query)))
+        self.page.wait_for_function('feed.loaded')
+        self.open_editor()
+        self.assertEqual(self.page.locator('.filter-metadata-select').input_value(), 'EOS')
+        self.assertEqual(self.page.get_by_label('Comparison', exact=True).input_value(), 'contains')
+        self.apply()
+        self.assertIn('2 items', self.page.locator('#timelineStatus').inner_text())
+        self.open_editor()
+        self.page.locator('.filter-metadata-select').select_option('EOS R5')
+        self.assertEqual(self.page.get_by_label('Comparison', exact=True).input_value(), 'eq')
+        self.apply()
+        self.assertIn('1 items', self.page.locator('#timelineStatus').inner_text())
+
+    def test_metadata_loading_failure_empty_and_unavailable_values(self):
+        self.page.route('**/*act=timeline_filter_values', lambda route: route.fulfill(
+            status=503, content_type='application/json', body=json.dumps(dict(ok=False, error='Choices failed'))))
+        self.page.locator('#btnTimelineFilter').click()
+        self.page.wait_for_function('!filterValuesRequest && document.querySelector("#filterMetadataStatus").textContent.includes("Choices failed")')
+        self.page.locator('#filterAdd').click()
+        row = self.page.locator('.filter-rule').last
+        row.get_by_label('Field', exact=True).select_option('model')
+        self.assertEqual(row.locator('input').count(), 0)
+        self.page.unroute('**/*act=timeline_filter_values')
+        row.get_by_role('button', name='Rescan gallery for camera and lens options').click()
+        self.page.wait_for_function('filterValues !== null && !filterTagsRequest && !filterValuesRequest')
+        row.locator('.filter-metadata-select').select_option('EOS R5')
+        self.apply()
+        # Metadata choices removed since a saved filter are kept as disabled context.
+        query = self.server.filter_json(dict(field='lens', op='eq', value='<missing lens>'))
+        self.page.goto(self.server.url+'?'+urllib.parse.urlencode(dict(view='timeline', filter=query)))
+        self.page.wait_for_function('feed.loaded')
+        self.open_editor()
+        self.assertEqual(self.page.locator('.filter-metadata-select').input_value(), '<missing lens>')
+        self.assertTrue(self.page.locator('.filter-metadata-select option:checked').is_disabled())
+        self.page.route('**/*act=timeline_filter_values', lambda route: route.fulfill(
+            content_type='application/json', body=json.dumps(dict(ok=True, data=dict(values=dict(make=[], model=[], lens=[]))))))
+        self.page.locator('#filterCancel').click()
+        self.open_editor()
+        self.page.get_by_label('Field', exact=True).select_option('make')
+        self.assertEqual(self.page.locator('.filter-metadata-select option').all_text_contents(), ['No values with existing files'])
+        self.page.get_by_role('button', name='Apply & refresh timeline').click()
+        self.assertTrue(self.page.locator('#timelineFilterDialog').is_visible())
 
     def test_tag_list_manual_rescan_and_failure_retry(self):
         self.open_editor()

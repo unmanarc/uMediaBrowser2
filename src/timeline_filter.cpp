@@ -26,9 +26,9 @@ struct Field
 const Field catalog[] = {
     {"tag", "Tag", "tag", "Choose a tag assigned to existing files. Branches are shown as paths; matching uses the exact name in any branch. Rescan to update files added or removed since the last scan."},
     {"creationDate", "Creation date", "date", "Uses digiKam creationDate only, never the filename or modification date. Dates without a timezone use server local time."},
-    {"make", "Camera manufacturer", "text", "Finds this text anywhere in the field (ignores A–Z letter case)."},
-    {"model", "Camera model", "text", "Finds this text anywhere in the field (ignores A–Z letter case)."},
-    {"lens", "Lens", "text", "Finds this text anywhere in the field (ignores A–Z letter case)."},
+    {"make", "Camera manufacturer", "text", "Choose a manufacturer stored in the database for existing files. Matches the exact value, including letter case."},
+    {"model", "Camera model", "text", "Choose a camera model stored in the database for existing files. Matches the exact value, including letter case."},
+    {"lens", "Lens", "text", "Choose a lens stored in the database for existing files. Matches the exact value, including letter case."},
     {"aperture", "Aperture", "number", "f-number, for example 2.8."},
     {"focalLength", "Focal length", "number", "Millimeters (mm)."},
     {"focalLength35", "Focal length (35 mm equivalent)", "number", "Millimeters (mm)."},
@@ -185,7 +185,7 @@ std::vector<TimelineFilter::Rule> TimelineFilter::parseRules(const boost::json::
                 if (condition.op != "gt" && condition.op != "lt") invalid("date operator must be gt or lt");
                 textValue = date(textValue);
             }
-            else if (condition.op != (type == "tag" ? "eq" : "contains")) invalid("unsupported text/tag operator");
+            else if (condition.op != "eq" && !(type == "text" && condition.op == "contains")) invalid("unsupported text/tag operator");
             condition.value = textValue;
         }
         conditions.push_back(std::move(condition));

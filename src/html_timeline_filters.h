@@ -43,8 +43,8 @@ i.ic-filter{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3
 .filter-date-zone{margin-top:7px;width:100%;}
 .filter-tag-refresh{margin-top:7px;font-size:12px;}
 .filter-tag-refresh[hidden]{display:none;}
-#filterTagStatus{font-size:12px;color:var(--fg-dim);}
-#filterTagStatus:empty{display:none;}
+#filterTagStatus,#filterMetadataStatus{font-size:12px;color:var(--fg-dim);}
+#filterTagStatus:empty,#filterMetadataStatus:empty{display:none;}
 .filter-remove{color:var(--danger);}
 .filter-hint{margin:14px 0 0;font-size:12px;color:var(--fg-dim);line-height:1.6;}
 #filterEmpty{padding:46px 20px;text-align:center;border:1px dashed var(--border);border-radius:12px;color:var(--fg-dim);margin-bottom:20px;}
@@ -83,6 +83,7 @@ inline const std::string HTML = R"uFILTER(
    <p class="filter-explainer" id="prefilterNotice" hidden>A mandatory server filter applies to Timeline and Folders. Your conditions narrow those results further (AND). Reset clears only your conditions.</p>
    <p class="filter-match">All main conditions must match (AND). Add a group to match alternatives (OR).</p>
    <p id="filterTagStatus" role="status" aria-live="polite"></p>
+   <p id="filterMetadataStatus" role="status" aria-live="polite"></p>
    <div id="filterRules"></div>
    <div id="filterEmpty"><strong>Your whole timeline</strong>Add a condition to narrow your search. Add several conditions for a date range or precise metadata search.</div>
    <div class="filter-add-row"><button class="btn" type="button" id="filterAdd">+ Add condition</button><button class="btn" type="button" id="filterAddGroup">+ Add group (OR / AND)</button><span id="filterCount" role="status"></span></div>
@@ -106,6 +107,35 @@ var filterJSON = new URLSearchParams(location.search).get('filter') || '';
 var appliedFilter = {rules:[]};
 var filterDialog = $('#timelineFilterDialog');
 var filterTags = null, filterTagsRequest = null;
+var filterValues = null, filterValuesRequest = null;
+
+/** @brief Populate categorical metadata without interpreting database values as markup. */
+function populateMetadataSelect(select,selected){
+  var values = filterValues === null ? [] : filterValues[select.dataset.field] || [];
+  select.replaceChildren(filterOption('',filterValues === null ? 'Loading options…' : values.length ? 'Choose a value…' : 'No values with existing files'));
+  values.forEach(function(value){ select.appendChild(filterOption(value,value)); });
+  if (selected && !values.includes(selected)){
+    var saved = filterOption(selected,selected + (select.dataset.legacy === 'true' ? ' (saved text match)' : ' (unavailable)'));
+    saved.disabled = true; select.appendChild(saved);
+  }
+  select.value = selected || '';
+}
+/** @brief Refresh database choices on opening the editor and after a gallery rescan. */
+function loadFilterValues(){
+  if (filterValuesRequest) return filterValuesRequest;
+  $('#filterMetadataStatus').textContent = 'Loading camera and lens options…';
+  filterValuesRequest = (async function(){
+    try {
+      var catalog = await data('?act=timeline_filter_values');
+      filterValues = catalog.values;
+      $$('.filter-metadata-select',$('#filterRules')).forEach(function(select){ populateMetadataSelect(select,select.value); });
+      $('#filterMetadataStatus').textContent = '';
+    } catch(error){
+      $('#filterMetadataStatus').textContent = 'Could not load camera and lens options: ' + error.message + ' Reopen filters or rescan the gallery to retry.';
+    } finally { filterValuesRequest = null; }
+  })();
+  return filterValuesRequest;
+}
 
 function updatePrefilterNotice(page){
   $('#prefilterNotice').hidden = !page.prefilter_active;
@@ -132,6 +162,10 @@ function loadFilterTags(rescan){
       filterTags = catalog.tags;
       $$('.filter-tag-select',$('#filterRules')).forEach(function(select){ populateTagSelect(select,select.value); });
       $('#filterTagStatus').textContent = (rescan ? 'Gallery rescanned. ' : '') + filterTags.length + ' tags with existing files.';
+      if (rescan){
+        if (filterValuesRequest) await filterValuesRequest;
+        await loadFilterValues();
+      }
     } catch(error){
       $('#filterTagStatus').textContent = 'Could not load tags: ' + error.message + ' Use the rescan button to retry.';
     } finally {
@@ -241,16 +275,35 @@ function addFilterRule(rule,focus,parent){
     op.replaceChildren();
     if (info.type === 'number') op.append(filterOption('eq','Equals (=)'),filterOption('gt','Greater than (>)'),filterOption('lt','Less than (<)'));
     else if (info.type === 'date') op.append(filterOption('gt','After (>)'),filterOption('lt','Before (<)'));
-    else op.append(filterOption(info.type === 'tag' ? 'eq' : 'contains',info.type === 'tag' ? 'Is exactly' : 'Contains text'));
+    else {
+      op.append(filterOption('eq','Is exactly'));
+      if (initial && info.type === 'text' && rule.op === 'contains') op.append(filterOption('contains','Contains text (saved filter)'));
+    }
     if (initial) op.value = rule.op; if (!op.value) op.selectedIndex = 0;
-    var nextValue = document.createElement(info.type === 'tag' ? 'select' : 'input'); nextValue.required = true;
+    var nextValue = document.createElement(info.type === 'tag' || info.type === 'text' ? 'select' : 'input'); nextValue.required = true;
     nextValue.setAttribute('aria-label','Value'); value.replaceWith(nextValue); value = nextValue; row._controls.value = value;
-    refreshTags.hidden = info.type !== 'tag';
+    refreshTags.hidden = info.type !== 'tag' && info.type !== 'text';
+    refreshTags.setAttribute('aria-label',info.type === 'tag' ? 'Rescan gallery for tags' : 'Rescan gallery for camera and lens options');
     if (info.type === 'tag'){
       value.className = 'filter-tag-select'; populateTagSelect(value,initial ? String(rule.value) : '');
       value.onchange = function(){ value.setCustomValidity(''); };
       zone.hidden = true; hint.textContent = info.hint;
       if (filterTags === null && !filterTagsRequest) loadFilterTags(false);
+      return;
+    }
+    if (info.type === 'text'){
+      value.className = 'filter-metadata-select'; value.dataset.field = info.field;
+      value.dataset.legacy = String(initial && rule.op === 'contains');
+      populateMetadataSelect(value,initial ? String(rule.value) : '');
+      value.onchange = function(){
+        value.setCustomValidity(''); op.value = 'eq';
+        var legacy = op.querySelector('option[value="contains"]'); if (legacy) legacy.remove();
+        value.dataset.legacy = 'false';
+        populateMetadataSelect(value,value.value); hint.textContent = info.hint;
+      };
+      zone.hidden = true;
+      hint.textContent = initial && rule.op === 'contains' ? 'Saved substring match (ignores A–Z letter case). Choosing a value switches to an exact match.' : info.hint;
+      if (filterValues === null && !filterValuesRequest) loadFilterValues();
       return;
     }
     value.type = info.type === 'number' ? 'number' : info.type === 'date' ? 'datetime-local' : 'text';
@@ -282,6 +335,7 @@ function openTimelineFilters(){
   });
   countFilterRules(); filterDialog.showModal(); $('#filterAdd').focus();
   loadFilterTags(false);
+  loadFilterValues();
 }
 /** @brief Commit JSON and regenerate the timeline without invalidating other clients. */
 function applyTimelineFilter(filter){
@@ -304,7 +358,7 @@ $('#filterForm').onsubmit = function(event){
       return {match:row._match.value,rules:children};
     }
     var c = row._controls, info = filterFields.find(function(item){ return item.field === c.field.value; });
-    var value = info.type === 'number' ? Number(c.value.value) : info.type === 'tag' ? c.value.value : c.value.value.trim();
+    var value = info.type === 'number' ? Number(c.value.value) : info.type === 'tag' || info.type === 'text' ? c.value.value : c.value.value.trim();
     if (info.type === 'date') value += (value.length === 16 ? ':00' : '') + c.zone.value;
     if (typeof value === 'string' && (!value || new TextEncoder().encode(value).length > 256)){
       c.value.setCustomValidity('Enter 1–256 bytes of text.'); c.value.reportValidity(); invalid = true;
