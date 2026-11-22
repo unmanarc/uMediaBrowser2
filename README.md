@@ -109,8 +109,10 @@ modification date (or 0 if unavailable).
 request-local read-only transactions. SQL joins the digiKam tables, constrains
 paths to `--rootdir`, converts dates, orders the results and filters event time
 ranges. Rows are consumed one at a time; only the requested page and up to six
-samples per displayed event are retained. There is no application media index,
-snapshot cache or startup scan. SQLite may use temporary storage for sorting.
+samples per displayed event are retained. SQLite may use temporary storage for
+sorting. Separately, the tag picker scans `--rootdir` at startup and stores the
+absolute paths of existing regular files in a named SQLite memory database.
+This snapshot contains paths only, excludes symlinks, and never modifies digiKam.
 
 Exact existing-file totals and configured event boundaries require streaming the
 matching ordered rows and checking file existence. Missing files, symlinks and
@@ -142,7 +144,8 @@ outdated pagination token returns HTTP 409 so the UI can reload current results.
 Event IDs contain a revision and time bounds for direct event range queries.
 
 The **filter icon** in the Timeline header opens a full-screen condition editor.
-Add a condition, choose its field and comparison, then enter a value. Each
+Add a condition, choose its field and comparison, then enter a value or select a
+tag from the list. Each
 condition can be removed or changed from **Include** to **Exclude (NOT)**.
 The main list always combines items with **AND**. Use **Add group (OR / AND)**
 to add a composed subfilter as one item. Inside each group, choose
@@ -156,6 +159,19 @@ discard draft changes and preserve the applied filter. An active-condition
 badge and summary provide access to the editor. Conditions survive page reloads
 and event links through the page URL. Folder browsing is independent.
 
+The tag list excludes digiKam technical tags marked with `internalTag` and the
+entire `_Digikam_Internal_Tags_` branch. It shows only nonblank tags assigned to at least one file in the
+existing-path snapshot under `--rootdir`. Labels show ancestor names to distinguish
+branches; ancestors without assigned files are not selectable options. Each list
+is resolved with SQL joins between digiKam images/tags and the attached memory
+table, without checking every file on disk. digiKam tag edits are visible on the
+next list request; file additions/removals require **↻ Rescan gallery** beside the
+tag selector. This button rebuilds the snapshot and updates all open tag lists,
+with a progress message while scanning. Readers can continue using the previous
+snapshot until the replacement is ready; a failed scan preserves it. The ordinary
+timeline refresh keeps its existing behavior and does not rescan the tag snapshot.
+Saved conditions referring to a removed tag remain visible as disabled options.
+
 Filtering runs entirely in SQL, before event grouping, totals, sampling and
 pagination. The same filter follows event galleries and carousel navigation.
 Removing intervening pictures can split an event according to the usual gap.
@@ -167,7 +183,7 @@ Supported conditions:
 
 | Field | Comparisons | Meaning |
 | --- | --- | --- |
-| `tag` | `eq` | Exact, case-sensitive `Tags.name` entered manually; no tag list is loaded. A name shared by multiple branches matches any branch, without duplicate photos |
+| `tag` | `eq` | Exact, case-sensitive `Tags.name` selected from tags assigned to existing files. A name shared by multiple branches matches any branch, without duplicate photos |
 | `creationDate` | `gt`, `lt` | Strictly after/before `ImageInformation.creationDate`, without falling back to filename/modification date |
 | `make`, `model`, `lens` | `contains` | Literal substring, ASCII case-insensitive; `%` and `_` have no wildcard meaning |
 | `aperture`, `focalLength`, `focalLength35`, `exposureTime`, `exposureProgram`, `exposureMode`, `sensitivity`, `flash`, `whiteBalance`, `whiteBalanceColorTemperature`, `meteringMode`, `subjectDistance`, `subjectDistanceCategory` | `gt`, `lt`, `eq` | Numeric comparisons against the corresponding `ImageMetadata` column |
@@ -232,6 +248,8 @@ Additional JSON services (same authentication as the folder browser):
 | `GET ?act=timeline_event&event=ID&cursor=0&limit=60` | Event items ordered by folder, with global event positions |
 | `GET ?act=timeline_samples&event=ID` | Up to six random items from an event |
 | `POST ?act=timeline_refresh` | Advance the client revision and read the first page; requires the usual CSRF cookie/header |
+| `GET ?act=timeline_tags` | Nonblank tags assigned to files in the memory snapshot, with IDs, parent IDs, names, branch paths and distinct file counts; no disk rescan |
+| `POST ?act=timeline_tags_refresh` | Rebuild the existing-path snapshot and return the updated tag catalog plus `scanned_files`; requires the usual CSRF cookie/header |
 
 Integration tests create a temporary library and launch a local server. They
 require `convert` and `node` in addition to the built application:
