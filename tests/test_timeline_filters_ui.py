@@ -186,6 +186,80 @@ class TimelineFilterUITests(unittest.TestCase):
                 db.execute("DELETE FROM Images WHERE album IN (SELECT id FROM Albums WHERE relativePath='/Familiar/Tag picker')")
             self.server.refresh('timeline_tags_refresh')
 
+    def test_informational_badges_and_carousel_hover_navigation(self):
+        name = '<tag> & ñ'
+        try:
+            with timeline.sqlite_connection(self.server.database) as db:
+                db.executemany('INSERT INTO Tags(id,pid,name) VALUES(?,?,?)', [
+                    (9500, 0, 'Travel'), (9501, 9500, name),
+                    (9502, 0, 'Family'), (9503, 9502, name),
+                ])
+                for tagid, album, filename in [(9501, '/Familiar/Large', '000.jpg'),
+                                               (9503, '/Familiar/Other', 'duplicate.jpg')]:
+                    db.execute('INSERT INTO ImageTags(imageid,tagid) SELECT i.id,? FROM Images i JOIN Albums a ON a.id=i.album WHERE a.relativePath=? AND i.name=?',
+                               (tagid, album, filename))
+            self.page.reload(); self.page.wait_for_function('feed.loaded')
+            story = self.page.locator('.story').filter(has_text='66 items')
+            badges = story.locator('.story-foot .tag-badge')
+            self.assertEqual(badges.all_text_contents(), [name, name])
+            self.assertEqual(badges.first.get_attribute('title'), 'Family / '+name)
+            self.assertEqual(badges.last.get_attribute('title'), 'Travel / '+name)
+            self.assertEqual(story.locator('.tag-badge button, .tag-badge a, .tag-badge img').count(), 0)
+            self.page.screenshot(path='/tmp/umedia-story-tags-desktop.png', full_page=True)
+            story.locator('.story-foot a').click()
+            self.page.wait_for_function('eventView && eventView.info')
+            self.assertEqual(self.page.locator('#eventDetails .tag-badge').all_text_contents(), [name, name])
+            self.page.screenshot(path='/tmp/umedia-event-tags-desktop.png', full_page=True)
+            self.page.locator('#eventItems .item').first.click()
+            self.page.wait_for_function('albumCurrentPath === "/Large/000.jpg" && document.querySelector("#albumImg").complete')
+            self.page.mouse.move(5, 5)
+            self.page.wait_for_function('getComputedStyle(document.querySelector("#albumTags")).visibility === "hidden"')
+            box = self.page.locator('#albumImg').bounding_box()
+            self.page.mouse.move(box['x']+box['width']/2, box['y']+box['height']/2)
+            self.page.wait_for_function('getComputedStyle(document.querySelector("#albumTags")).opacity === "1"')
+            badge = self.page.locator('#albumTags .tag-badge')
+            self.assertEqual(badge.inner_text(), name)
+            self.assertEqual(badge.get_attribute('title'), 'Travel / '+name)
+            badge_box = badge.bounding_box()
+            self.page.mouse.move(badge_box['x']+badge_box['width']/2, badge_box['y']+badge_box['height']/2, steps=20)
+            self.page.wait_for_function('getComputedStyle(document.querySelector("#albumTags")).visibility === "visible"')
+            self.assertTrue(badge.is_visible())
+            self.page.screenshot(path='/tmp/umedia-carousel-tags-desktop.png', full_page=True)
+            # Hovering a badge is informational; image navigation still works.
+            self.assertEqual(self.page.evaluate('albumCurrentPath'), '/Large/000.jpg')
+            self.page.keyboard.press('ArrowRight')
+            self.page.wait_for_function('albumCurrentPath === "/Large/001.jpg"')
+            self.assertTrue(self.page.locator('#albumTags').is_hidden())
+            # Wrap to a tagged image beyond the initial 60-file page.
+            self.page.keyboard.press('ArrowLeft'); self.page.keyboard.press('ArrowLeft')
+            self.page.wait_for_function('albumCurrentPath === "/Other/duplicate.jpg"')
+            self.assertEqual(self.page.locator('#albumTags .tag-badge').get_attribute('title'), 'Family / '+name)
+            self.page.keyboard.press('Escape')
+            self.assertEqual(self.page.locator('#albumTags .tag-badge').count(), 0)
+            self.page.set_viewport_size(dict(width=390, height=844))
+            self.assertTrue(self.page.locator('#eventDetails').is_visible())
+            self.assertTrue(self.page.evaluate('document.querySelector("#timelineMain").scrollWidth <= innerWidth'))
+            self.page.locator('#eventDetails').scroll_into_view_if_needed()
+            self.page.screenshot(path='/tmp/umedia-event-tags-mobile.png', full_page=True)
+            touch_context = self.browser.new_context(viewport=dict(width=390, height=844), is_mobile=True, has_touch=True)
+            try:
+                touch_page = touch_context.new_page()
+                touch_page.on('pageerror', lambda error: self.errors.append(str(error)))
+                touch_page.goto(self.page.url)
+                touch_page.wait_for_function('eventView && eventView.info')
+                touch_page.locator('#eventItems .item').first.tap()
+                touch_page.wait_for_function('albumCurrentPath === "/Large/000.jpg"')
+                touch_page.wait_for_function('getComputedStyle(document.querySelector("#albumTags")).opacity === "1"')
+                self.assertEqual(touch_page.locator('#albumTags .tag-badge').inner_text(), name)
+                self.assertTrue(touch_page.evaluate('document.querySelector("#albumTags").scrollWidth <= innerWidth'))
+                touch_page.screenshot(path='/tmp/umedia-carousel-tags-mobile.png', full_page=True)
+            finally:
+                touch_context.close()
+        finally:
+            with timeline.sqlite_connection(self.server.database) as db:
+                db.execute('DELETE FROM ImageTags WHERE tagid BETWEEN 9500 AND 9503')
+                db.execute('DELETE FROM Tags WHERE id BETWEEN 9500 AND 9503')
+
     def test_json_offsets_are_preserved_by_editor(self):
         query = self.server.filter_json(dict(field='creationDate',op='gt',value='2020-01-01T00:00:00+03:00'))
         self.page.goto(self.server.url+'?'+urllib.parse.urlencode(dict(view='timeline',filter=query)))

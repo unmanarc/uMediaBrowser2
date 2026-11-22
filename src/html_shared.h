@@ -425,6 +425,7 @@ function openAlbum(preferName){
 function closeAlbum(){
   ++albumRenderSerial;
   albumCurrentPath = "";
+  document.dispatchEvent(new CustomEvent('albumitemchange', {detail:null}));
   $("#albumImg").removeAttribute("src");
   var v = $('#albumVideo');
   v.pause();
@@ -446,6 +447,7 @@ function mediaUrl(it){ return '?act=download&file=' + enc(albumPath(it)); }
 
 async function renderAlbum(){
   var serial = ++albumRenderSerial;
+  document.dispatchEvent(new CustomEvent('albumitemchange', {detail:null}));
   var list = albumList();
   if (!list.length){ closeAlbum(); return; }
   albumIdx = Math.max(0, Math.min(albumIdx, list.length - 1));
@@ -492,6 +494,7 @@ async function renderAlbum(){
     img.classList.add('show');
     loadAlbumExif(it);
   }
+  document.dispatchEvent(new CustomEvent('albumitemchange', {detail:it}));
   preloadAlbumNext();
 }
 

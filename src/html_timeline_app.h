@@ -45,7 +45,22 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
 .story-photo:focus-visible,.item:focus-visible{outline:2px solid var(--accent2);outline-offset:-3px;}
 .story-photo .ic{position:absolute;inset:40%;}
 .story-foot{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;color:var(--fg-dim);font-size:12px;}
-.story-foot .btn{font-size:13px;}
+.story-foot .btn{font-size:13px;flex-shrink:0;}
+.story-foot>.tag-list{flex:1;min-width:0;}
+.tag-list{display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;}
+.tag-badge{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:5px 10px;border-radius:999px;border:1px solid hsl(var(--tag-hue) 48% 66% / .22);background:hsl(var(--tag-hue) 48% 60% / .09);color:hsl(var(--tag-hue) 62% 78%);font-size:11px;font-weight:500;line-height:1.35;overflow-wrap:anywhere;cursor:default;}
+.tag-badge:before{content:'';flex:none;width:5px;height:5px;border-radius:50%;background:hsl(var(--tag-hue) 58% 70%);box-shadow:0 0 6px hsl(var(--tag-hue) 60% 65% / .18);}
+.tag-badge:hover{background:hsl(var(--tag-hue) 48% 60% / .17);border-color:hsl(var(--tag-hue) 48% 66% / .4);}
+.tags-empty{font-size:12px;color:var(--fg-dim);font-style:italic;}
+.event-tags{margin-top:18px;padding-top:16px;border-top:1px solid var(--border);}
+.event-tags h4{display:flex;align-items:center;gap:8px;margin:0 0 10px;font-size:11px;font-weight:500;color:var(--fg-dim);text-transform:uppercase;letter-spacing:.1em;}
+.event-tags .tag-count{font-size:10px;letter-spacing:0;padding:2px 6px;border:1px solid var(--border);border-radius:10px;}
+#albumTags{position:absolute;bottom:0;left:0;right:0;z-index:25;padding:40px 60px 24px;background:linear-gradient(transparent,rgba(8,12,19,.88));opacity:0;visibility:hidden;transform:translateY(6px);transition:opacity .18s,transform .18s,visibility .18s;}
+#albumTags[hidden]{display:none;}
+#albumTags .tag-list{justify-content:center;max-height:28vh;overflow:auto;padding:4px;}
+#albumTags .tag-badge{background:hsl(var(--tag-hue) 30% 14% / .92);border-color:hsl(var(--tag-hue) 50% 70% / .32);backdrop-filter:blur(12px);font-size:12px;padding:6px 12px;box-shadow:0 2px 12px #0003;}
+#albumLayer.tags-visible #albumTags{opacity:1;visibility:visible;transform:none;}
+@media(hover:none){#albumTags{opacity:1;visibility:visible;transform:none;}}
 #moreArea{display:flex;justify-content:center;padding:4px 0 36px;}
 #btnMore{min-width:165px;justify-content:center;border-radius:20px;}
 #btnMore[hidden]{display:none;}
@@ -83,16 +98,17 @@ h1{font-size:clamp(25px,4vw,36px);font-weight:600;letter-spacing:-.03em;line-hei
  .timeline-content{padding:24px 12px;}
  .story{padding-left:16px;margin-left:5px;}
  .story-heading h2{font-size:16px;}
- .story-foot{padding:10px;}
+ .story-foot{padding:10px;align-items:flex-start;flex-wrap:wrap;}
+ #albumTags{padding:32px 18px 18px;}
  .event-layout{display:block;}
- #eventDetails{display:none;}
+ #eventDetails{position:static;margin-top:24px;}
  .event-tools .spacer{display:none;}
  .story-photo{aspect-ratio:1.1;}
  #albumFooter{font-size:11px;gap:6px;}
  #albumExif{display:none;}
  #albumName{max-width:60%;}
 }
-@media(prefers-reduced-motion:reduce){.story-photo img{transition:none;}}
+@media(prefers-reduced-motion:reduce){.story-photo img,#albumTags{transition:none;}}
 </style>
 </head>
 <body>
@@ -212,6 +228,63 @@ var storyObserver = new IntersectionObserver(function(entries){
   });
 }, {root:main});
 
+// Shared by story summaries, event details and the current carousel image.
+// Use text nodes so digiKam names remain plain text, including markup characters.
+function tagBadges(tags, label){
+  var list = document.createElement('div'); list.className = 'tag-list';
+  list.setAttribute('role','list'); list.setAttribute('aria-label',label);
+  (tags || []).forEach(function(tag){
+    var badge = document.createElement('span'); badge.className = 'tag-badge';
+    badge.setAttribute('role','listitem'); badge.textContent = tag.name;
+    badge.title = tag.path || tag.name; badge.setAttribute('aria-label',badge.title);
+    var hash = 0;
+    for (var i = 0; i < badge.title.length; ++i) hash = (hash * 31 + badge.title.charCodeAt(i)) | 0;
+    badge.style.setProperty('--tag-hue', [158,205,260,325,38][(hash >>> 0) % 5]);
+    list.appendChild(badge);
+  });
+  if (!list.childElementCount){
+    list.removeAttribute('role');
+    var empty = document.createElement('span'); empty.className = 'tags-empty'; empty.textContent = 'No tags'; list.appendChild(empty);
+  }
+  return list;
+}
+var albumTags = document.createElement('div'); albumTags.id = 'albumTags'; albumTags.hidden = true;
+$('#albumLayer').appendChild(albumTags);
+var albumPointer = null, albumTagHideTimer = null;
+function updateAlbumTagVisibility(){
+  clearTimeout(albumTagHideTimer);
+  var media = $('#albumImg.show, #albumVideo.show'), over = false;
+  if (albumPointer && media){
+    var box = media.getBoundingClientRect();
+    over = albumPointer.x >= box.left && albumPointer.x <= box.right && albumPointer.y >= box.top && albumPointer.y <= box.bottom;
+  }
+  if (over) $('#albumLayer').classList.add('tags-visible');
+  // Allow the pointer to cross the space between a small photo and its badges.
+  else albumTagHideTimer = setTimeout(function(){ $('#albumLayer').classList.remove('tags-visible'); },350);
+}
+document.addEventListener('albumitemchange',function(event){
+  var item = event.detail;
+  albumTags.replaceChildren(); albumTags.hidden = !(item && item.tags && item.tags.length);
+  if (!albumTags.hidden){
+    albumTags.appendChild(tagBadges(item.tags,'Image tags')); updateAlbumTagVisibility();
+  } else {
+    clearTimeout(albumTagHideTimer); $('#albumLayer').classList.remove('tags-visible');
+  }
+});
+// Navigation hit zones cover the photo, so measure its bounds instead of :hover.
+$('#albumLayer').addEventListener('pointermove',function(event){
+  albumPointer = {x:event.clientX,y:event.clientY};
+  if (albumTags.contains(event.target)) clearTimeout(albumTagHideTimer);
+  else updateAlbumTagVisibility();
+});
+$('#albumLayer').addEventListener('pointerleave',function(){ albumPointer = null; updateAlbumTagVisibility(); });
+$('#albumLayer').addEventListener('keydown',function(event){
+  if (event.key === 'Tab'){ clearTimeout(albumTagHideTimer); $('#albumLayer').classList.add('tags-visible'); }
+});
+$('#albumImg').addEventListener('load',updateAlbumTagVisibility);
+$('#albumVideo').addEventListener('loadedmetadata',updateAlbumTagVisibility);
+window.addEventListener('resize',updateAlbumTagVisibility);
+
 function carousel(event, index, seed){
   var cache = new Map();
   (seed || []).forEach(function(item){ cache.set(item.index,item); });
@@ -245,9 +318,10 @@ function appendStory(event){
   var card = document.createElement('article');
   card.className = 'story';
   card._event = event;
-  card.innerHTML = '<div class="story-heading"><div><h2></h2><span class="subtle"></span></div></div><div class="story-body"><div class="story-images"></div><div class="story-foot"><span>One moment. Every folder.</span><a class="btn">Open event <span aria-hidden="true">↗</span></a></div></div>';
+  card.innerHTML = '<div class="story-heading"><div><h2></h2><span class="subtle"></span></div></div><div class="story-body"><div class="story-images"></div><div class="story-foot"><a class="btn">Open event <span aria-hidden="true">↗</span></a></div></div>';
   $('h2',card).textContent = 'Pictures from ' + dateRange(event);
   $('.story-heading .subtle',card).textContent = event.count.toLocaleString() + ' items';
+  $('.story-foot',card).prepend(tagBadges(event.tags,'Event tags'));
   $('a',card).href = '#event=' + enc(event.id);
   $('#stories').appendChild(card);
   storyPhotos(card,event,event.samples);
@@ -310,6 +384,10 @@ function describeEvent(info){
     var dt = document.createElement('dt'), dd = document.createElement('dd'); dt.textContent = pair[0]; dd.textContent = pair[1]; list.append(dt,dd);
   });
   details.appendChild(list);
+  var tags = document.createElement('section'); tags.className = 'event-tags';
+  var heading = document.createElement('h4'); heading.textContent = 'Tags';
+  var count = document.createElement('span'); count.className = 'tag-count'; count.textContent = (info.tags || []).length.toLocaleString();
+  heading.appendChild(count); tags.append(heading,tagBadges(info.tags,'Event tags')); details.appendChild(tags);
   var help = document.createElement('p'); help.className = 'subtle'; help.textContent = 'Open any picture to browse the whole event. Use ← and → to move between folders.'; details.appendChild(help);
 }
 async function loadEvent(){
