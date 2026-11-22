@@ -155,6 +155,52 @@ void checkQuery(const std::shared_ptr<Query> &query, bool finished = false)
                     (query ? query->getLastSQLError() : "query unavailable"));
 }
 
+/** @brief Build SQLite's equivalent of the observed IMG filename regexes.
+ *
+ * Regexes (case-insensitive, anchored at the beginning):
+ * - IMG[_-]([0-9]{8})[-_]([0-9]{6})($|[^0-9])
+ * - IMG[_-]([0-9]{8})-WA[0-9]
+ * - IMG[_-]([0-9]{8})($|[.])
+ *
+ * GLOB digit classes plus fixed offsets implement these patterns inside SQLite,
+ * which has no built-in REGEXP. This keeps ORDER BY and event range filtering
+ * on the selected date without an extension or an application-side media index.
+ * Camera counters such as IMG_1234 and unseparated numeric IDs do not match.
+ * Date-only names, including WhatsApp, use midnight in server local time.
+ * Calendar/time validity is checked separately by isoTimestampSQL().
+ * @return SQL expression producing a local ISO timestamp or NULL.
+ */
+std::string filenameDateSQL()
+{
+    const std::string date = "substr(i.name,5,4) || '-' || substr(i.name,9,2) || '-' || substr(i.name,11,2)";
+    return "CASE WHEN upper(substr(i.name,1,3))='IMG' AND substr(i.name,4,1) IN ('_','-') "
+           "AND substr(i.name,5,8) GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' THEN CASE "
+           "WHEN substr(i.name,13,1) IN ('_','-') "
+           "AND substr(i.name,14,6) GLOB '[0-9][0-9][0-9][0-9][0-9][0-9]' "
+           "AND (length(i.name)=19 OR substr(i.name,20,1) NOT GLOB '[0-9]') THEN " + date +
+           " || 'T' || substr(i.name,14,2) || ':' || substr(i.name,16,2) || ':' || substr(i.name,18,2) "
+           "WHEN (upper(substr(i.name,13,3))='-WA' AND substr(i.name,16,1) GLOB '[0-9]') "
+           "OR length(i.name)=12 OR substr(i.name,13,1)='.' THEN " + date + " || 'T00:00:00' END END";
+}
+
+/** @brief Convert a valid ISO date expression to Unix seconds in SQLite.
+ * Invalid calendar dates (including non-leap February 29), year zero, invalid
+ * times, empty strings and NULL return NULL, allowing COALESCE to try the next
+ * source. Dates without an explicit timezone use the server local timezone;
+ * Z and numeric offsets are preserved. Fractional seconds are truncated.
+ * @param column Internal SQL column name, never supplied by an HTTP client.
+ * @return SQL expression yielding signed Unix seconds or NULL.
+ */
+std::string isoTimestampSQL(const std::string &column)
+{
+    return "CASE WHEN substr(" + column + ",1,4) BETWEEN '0001' AND '9999' "
+           "AND strftime('%Y-%m-%d',substr(" + column + ",1,10),'+0 days')=substr(" + column + ",1,10) "
+           "AND (length(" + column + ")<19 OR substr(" + column + ",12,2) BETWEEN '00' AND '23') "
+           "THEN CAST(strftime('%s'," + column + ", CASE WHEN length(" + column + ")>=19 "
+           "AND instr(substr(" + column + ",20),'Z')=0 AND instr(substr(" + column + ",20),'+')=0 "
+           "AND instr(substr(" + column + ",20),'-')=0 THEN 'utc' ELSE '+0 seconds' END) AS INTEGER) END";
+}
+
 /** @brief Decode one signed event bound; reject overflow and trailing characters. */
 int64_t bound(const std::string &text)
 {
@@ -221,7 +267,7 @@ public:
     size_t walk(const Event *range, bool byFolder, const std::function<void(Media)> &consume, size_t &skipped)
     {
         auto input = bindings;
-        std::string sql = scope + " SELECT path, folder, timestamp, size FROM media";
+        std::string sql = scope + " SELECT path, folder, timestamp, size, mtime, date_source FROM media";
         if (range)
         {
             sql += " WHERE timestamp BETWEEN :start AND :end";
@@ -229,9 +275,9 @@ public:
             input[":end"] = std::make_shared<INT64>(range->end);
         }
         sql += byFolder ? " ORDER BY folder, timestamp DESC, path" : " ORDER BY timestamp DESC, path";
-        STRING path, folder;
-        INT64 timestamp, size;
-        auto query = connection.qSelect(sql, input, {&path, &folder, &timestamp, &size});
+        STRING path, folder, dateSource;
+        INT64 timestamp, size, modified;
+        auto query = connection.qSelect(sql, input, {&path, &folder, &timestamp, &size, &modified, &dateSource});
         checkQuery(query);
         size_t candidates = 0;
         while (query->step())
@@ -244,6 +290,8 @@ public:
             item.path = root == "/" ? full : full.substr(root.size());
             item.folder = directory == root ? "/" : root == "/" ? directory : directory.substr(root.size());
             item.timestamp = timestamp.getValue();
+            item.mtime = modified.getValue();
+            item.dateSource = dateSource.getValue();
             item.size = static_cast<uintmax_t>(std::max<int64_t>(0, size.getValue()));
             consume(std::move(item));
         }
@@ -358,7 +406,9 @@ public:
 private:
     /** @brief Build a bound SQL scope from collection metadata, without loading Images.
      * Only the small AlbumRoots table is read here. Album joins, rootdir filtering,
-     * ISO-date conversion and result ordering are performed by SQLite.
+     * ISO-date conversion and result ordering are performed by SQLite. The selected
+     * timestamp is filename first, then ImageInformation.creationDate, then
+     * Images.modificationDate; all ordering/range queries share that expression.
      */
     void prepareScope()
     {
@@ -385,6 +435,13 @@ private:
         if (collections.empty()) collections = "(NULL,NULL)";
         bindings[":root"] = std::make_shared<STRING>(root);
         bindings[":prefix"] = std::make_shared<STRING>(root == "/" ? "/" : root + "/");
+        // These unbounded LIMIT/OFFSET clauses keep the date CTEs as streaming
+        // subqueries. Without that flattening barrier SQLite substitutes the
+        // filename/date expressions repeatedly into COALESCE, ORDER BY and
+        // range filters, doing the same parsing many times per record. This
+        // works without MATERIALIZED hints or a newer SQLite requirement.
+        // CASE/COALESCE parse lower-priority dates only when needed; the original
+        // modification timestamp is also returned separately for visible rows.
         scope = "WITH collections(id,path) AS (VALUES " + collections + R"SQL(),
             album_paths AS (
                 SELECT a.id,
@@ -394,19 +451,36 @@ private:
                 WHERE a.relativePath IS NOT NULL
                   AND instr('/' || trim(a.relativePath,'/') || '/', '/../')=0
                   AND instr('/' || trim(a.relativePath,'/') || '/', '/./')=0
-            ), media AS (
+            ), image_dates AS (
                 SELECT a.folder || CASE WHEN a.folder='/' THEN '' ELSE '/' END || i.name AS path, a.folder,
-                    CAST(strftime('%s', i.modificationDate,
-                        CASE WHEN length(i.modificationDate)>=19
-                                  AND instr(substr(i.modificationDate,20),'Z')=0
-                                  AND instr(substr(i.modificationDate,20),'+')=0
-                                  AND instr(substr(i.modificationDate,20),'-')=0
-                             THEN 'utc' ELSE '+0 seconds' END) AS INTEGER) AS timestamp,
-                    COALESCE(i.fileSize,0) AS size
+                    i.modificationDate AS modification_date, info.creationDate AS creation_date,
+        )SQL" + filenameDateSQL() + R"SQL( AS filename_date, COALESCE(i.fileSize,0) AS size
                 FROM Images i JOIN album_paths a ON a.id=i.album
+                LEFT JOIN ImageInformation info ON info.imageid=i.id
                 WHERE (a.folder=:root OR substr(a.folder,1,length(:prefix))=:prefix)
                   AND i.name IS NOT NULL AND i.name NOT IN ('','.','..')
                   AND instr(i.name,'/')=0 AND instr(i.name,char(0))=0
+                LIMIT -1 OFFSET 0
+            ), filename_times AS (
+                SELECT path, folder, size, creation_date, modification_date,
+        )SQL" + isoTimestampSQL("filename_date") + R"SQL( AS filename_time
+                FROM image_dates
+                LIMIT -1 OFFSET 0
+            ), timestamps AS (
+                SELECT path, folder, size, modification_date, filename_time,
+                    CASE WHEN filename_time IS NULL THEN
+        )SQL" + isoTimestampSQL("creation_date") + R"SQL( END AS creation_time
+                FROM filename_times
+                LIMIT -1 OFFSET 0
+            ), media AS (
+                SELECT path, folder, size,
+                    COALESCE(filename_time, creation_time,
+        )SQL" + isoTimestampSQL("modification_date") + ") AS timestamp, COALESCE(" +
+                isoTimestampSQL("modification_date") + R"SQL(,0) AS mtime,
+                    CASE WHEN filename_time IS NOT NULL THEN 'filename'
+                         WHEN creation_time IS NOT NULL THEN 'creationDate'
+                         ELSE 'modificationDate' END AS date_source
+                FROM timestamps
             )
         )SQL";
     }
