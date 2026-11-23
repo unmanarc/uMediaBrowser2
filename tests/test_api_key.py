@@ -1,4 +1,5 @@
 """API key integration tests. Run: python3 tests/test_api_key.py [binary]"""
+from config_support import config_command
 import base64
 from contextlib import contextmanager
 import http.client
@@ -27,16 +28,16 @@ class APIKeyTests(unittest.TestCase):
             env.pop('APIKEY', None)
             if key is not None:
                 env['APIKEY'] = key
-            args = [str(BINARY), '--rootdir', directory, '-a', '127.0.0.1',
-                    '-l', str(self.port), '-u', '-s']
+            settings = {'http.rootdir': directory, 'http.laddr': '127.0.0.1',
+                        'http.lport': self.port, 'permissions.can-upload': True, 'logging.sys': True}
             if title is not None:
-                args += ['--title', title]
+                settings['http.title'] = title
             if basic:
                 password = self.root / 'password'
                 password.write_text('user\npassword\n')
-                args += ['--passfile', str(password)]
+                settings['security.passfile'] = password
             with tempfile.TemporaryFile() as log:
-                process = subprocess.Popen(args, env=env, stdout=log, stderr=log)
+                process = subprocess.Popen(config_command(BINARY, directory, **settings), env=env, stdout=log, stderr=log)
                 try:
                     for _ in range(200):
                         if process.poll() is not None:

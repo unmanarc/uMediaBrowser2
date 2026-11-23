@@ -19,6 +19,7 @@ file(GLOB_RECURSE EDV_SOURCE_FILES "src/*.c*")
 add_executable( ${APP_NAME} ${EDV_INCLUDE_FILES} ${EDV_SOURCE_FILES} )
 
 install( TARGETS ${APP_NAME} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} )
+install(FILES uMediaBrowser2.info.example DESTINATION ${CMAKE_INSTALL_DATADIR}/${APP_NAME})
 
 ################################################################################
 # Mantids30 location:
@@ -95,20 +96,19 @@ if (EXTRAPREFIX)
     target_link_options(${APP_NAME} PRIVATE "-Wl,--disable-new-dtags")
 endif()
 
-if (WITH_SSL_SUPPORT)
-    add_definitions(-DWITH_SSL_SUPPORT)
+# TLS support is always compiled in; tls.enabled selects HTTP or HTTPS at runtime.
+target_compile_definitions(${APP_NAME} PRIVATE WITH_SSL_SUPPORT)
 
-    option(SSLRHEL7 "OpenSSL 1.1 For Red Hat 7.x provided by EPEL" OFF)
-    if (SSLRHEL7)
-        pkg_check_modules(OPENSSL REQUIRED libssl11)
-    else()
-        pkg_check_modules(OPENSSL REQUIRED libssl)
-    endif()
-    target_include_directories(${APP_NAME} PUBLIC ${OPENSSL_INCLUDE_DIRS})
-    target_compile_options(${APP_NAME} PUBLIC ${OPENSSL_CFLAGS_OTHER})
-    target_link_libraries(${APP_NAME} ${OPENSSL_LDFLAGS})
-    target_link_libraries(${APP_NAME} "-lz")
+option(SSLRHEL7 "OpenSSL 1.1 For Red Hat 7.x provided by EPEL" OFF)
+if (SSLRHEL7)
+    pkg_check_modules(OPENSSL REQUIRED libssl11)
+else()
+    pkg_check_modules(OPENSSL REQUIRED libssl)
 endif()
+target_include_directories(${APP_NAME} PUBLIC ${OPENSSL_INCLUDE_DIRS})
+target_compile_options(${APP_NAME} PUBLIC ${OPENSSL_CFLAGS_OTHER})
+target_link_libraries(${APP_NAME} ${OPENSSL_LDFLAGS})
+target_link_libraries(${APP_NAME} "-lz")
 
 if (WIN32)
     target_link_libraries(${APP_NAME} "-lws2_32")

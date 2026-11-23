@@ -17,6 +17,7 @@
 #include <sys/time.h>
 
 #include "config.h"
+#include "appconfig.h"
 #include "favicon.h"
 #include "html_errors.h"
 #include "webclienthdlr.h"
@@ -36,7 +37,10 @@ public:
     static std::shared_ptr<Mantids30::Core::Memory::Containers::B_MEM> favicon;
     static time_t staticContentTime;
 
-    UMediaBrowser() { multiThreadedAcceptor = std::make_shared<Mantids30::Network::Sockets::Acceptors::MultiThreaded>(); }
+    explicit UMediaBrowser(boost::property_tree::ptree configuration) : configuration(std::move(configuration))
+    {
+        multiThreadedAcceptor = std::make_shared<Mantids30::Network::Sockets::Acceptors::MultiThreaded>();
+    }
 
     void _shutdown() override { log->log0(__func__, Logs::INFO, "SIGTERM received."); }
 
@@ -54,34 +58,6 @@ public:
         globalArguments->softwareLicense = "AGPL";
         globalArguments->softwareDescription = std::string(PROJECT_DESCRIPTION);
         globalArguments->addAuthor({"Aarón Mizrachi", "aaron@unmanarc.com"});
-
-        globalArguments->addCommandLineOption("Server Options", 'g', "can-archive", "Allow to get server directories as tar.gz files (on-the-fly)", "false", Abstract::Var::Type::BOOL);
-        globalArguments->addCommandLineOption("Server Options", 'u', "can-upload", "Allow file uploads", "false", Abstract::Var::Type::BOOL);
-        globalArguments->addCommandLineOption("Server Options", 'o', "can-overwrite", "Allow overwrite on file uploads and/or delete files", "false", Abstract::Var::Type::BOOL);
-
-        globalArguments->addCommandLineOption("HTTP Options", 'r', "rootdir", "HTTP Document Root Directory", ".", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("HTTP Options", 'l', "lport", "Local HTTP Port", "8001", Abstract::Var::Type::UINT16);
-        globalArguments->addCommandLineOption("HTTP Options", '4', "ipv4", "Use only IPv4", "true", Abstract::Var::Type::BOOL);
-        globalArguments->addCommandLineOption("HTTP Options", 'a', "laddr", "Listen Address", "*", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("HTTP Options", 0, "title", "Application title shown in browser tab and toolbar", "", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("HTTP Options", 't', "threads", "Max Concurrent Connections (Threads)", "1024", Abstract::Var::Type::UINT16);
-        globalArguments->addCommandLineOption("HTTP Options", 0, "use-x-real-ip", "Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy)", "false", Abstract::Var::Type::BOOL);
-
-        globalArguments->addCommandLineOption("Timeline Options", 0, "timeline-gap-minutes", "Inactivity in minutes that starts a new timeline group (positive integer)", "30", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("Timeline Options", 0, "tag-exclude-file", "Hide tag names from the picker and badges using one case-sensitive ECMAScript regex per line", "", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("Server Options", 0, "prefilter", "JSON file with mandatory AND conditions for timeline and folders", "", Abstract::Var::Type::STRING);
-
-        globalArguments->addCommandLineOption("HTTP Security", 'p', "passfile", "HTTP User/Pass File", "", Abstract::Var::Type::STRING);
-
-        globalArguments->addCommandLineOption("Other Options", 's', "sys", "Journalctl Log Mode (don't print colors or dates)", "false", Abstract::Var::Type::BOOL);
-        globalArguments->addCommandLineOption("Other Options", 'd', "debug", "Verbose debug logging (full URIs, per-entry detail)", "false", Abstract::Var::Type::BOOL);
-
-#ifdef WITH_SSL_SUPPORT
-        globalArguments
-            ->addCommandLineOption("TLS Options", 0, "cafile", "X.509 Certificate Authority Path (if not defined, then without client authentication)", "", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("TLS Options", 'k', "keyfile", "X.509 Private Key Path (if not defined, then HTTP)", "", Abstract::Var::Type::STRING);
-        globalArguments->addCommandLineOption("TLS Options", 'c', "certfile", "X.509 Certificate Path (if not defined, then HTTP)", "", Abstract::Var::Type::STRING);
-#endif
     }
 
     bool _config(int argc, char *argv[], Arguments::GlobalArguments *globalArguments) override
@@ -89,9 +65,8 @@ public:
 #ifdef WITH_SSL_SUPPORT
         Mantids30::Network::Sockets::Socket_TLS::prepareTLS();
 #endif
-        bool configUseFancy = !globalArguments->getCommandLineOptionBooleanValue("sys");
-        const bool debugMode = globalArguments->getCommandLineOptionBooleanValue("debug");
-        fprintf(stderr, "# Arguments: %s\n", globalArguments->getCurrentProgramOptionsValuesAsBashLine().c_str());
+        bool configUseFancy = !configuration.get<bool>("logging.sys");
+        const bool debugMode = configuration.get<bool>("logging.debug");
 
         log = new Logs::AppLog();
         log->enableEmptyFieldLogging = true;
@@ -111,7 +86,7 @@ public:
         webClientParameters.rpcLog->moduleFieldMinWidth = 36;
         webClientParameters.rpcLog->setDebug(debugMode);
 
-        std::string passFile = globalArguments->getCommandLineOptionValue("passfile")->toString();
+        std::string passFile = configuration.get<std::string>("security.passfile");
 
         if (const char *apiKey = std::getenv("APIKEY"))
             webClientParameters.apiKey = apiKey;
@@ -140,17 +115,17 @@ public:
             }
         }
 
-        listenAddress = globalArguments->getCommandLineOptionValue("laddr")->toString();
-        webClientParameters.httpDocumentRootDir = globalArguments->getCommandLineOptionValue("rootdir")->toString();
-        listenPort = static_cast<uint16_t>(std::stoul(globalArguments->getCommandLineOptionValue("lport")->toString()));
-        webClientParameters.canArchive = globalArguments->getCommandLineOptionBooleanValue("can-archive");
-        webClientParameters.canUpload = globalArguments->getCommandLineOptionBooleanValue("can-upload");
-        webClientParameters.canOverwrite = globalArguments->getCommandLineOptionBooleanValue("can-overwrite");
-        webClientParameters.debug = globalArguments->getCommandLineOptionBooleanValue("debug");
-        webClientParameters.useXRealIP = globalArguments->getCommandLineOptionBooleanValue("use-x-real-ip");
-        webClientParameters.appTitle = globalArguments->getCommandLineOptionValue("title")->toString();
+        listenAddress = configuration.get<std::string>("http.laddr");
+        webClientParameters.httpDocumentRootDir = configuration.get<std::string>("http.rootdir");
+        listenPort = static_cast<uint16_t>(std::stoul(configuration.get<std::string>("http.lport")));
+        webClientParameters.canArchive = configuration.get<bool>("permissions.can-archive");
+        webClientParameters.canUpload = configuration.get<bool>("permissions.can-upload");
+        webClientParameters.canOverwrite = configuration.get<bool>("permissions.can-overwrite");
+        webClientParameters.debug = configuration.get<bool>("logging.debug");
+        webClientParameters.useXRealIP = configuration.get<bool>("http.use-x-real-ip");
+        webClientParameters.appTitle = configuration.get<std::string>("http.title");
 
-        const auto prefilterFile = globalArguments->getCommandLineOptionValue("prefilter")->toString();
+        const auto prefilterFile = configuration.get<std::string>("security.prefilter");
         if (!prefilterFile.empty())
         {
             try
@@ -167,31 +142,31 @@ public:
             }
             catch (const std::exception &error)
             {
-                log->log0(__func__, Logs::CRITICAL, "Invalid --prefilter '%s': %s", prefilterFile.c_str(), error.what());
+                log->log0(__func__, Logs::CRITICAL, "Invalid prefilter '%s': %s", prefilterFile.c_str(), error.what());
                 return false;
             }
         }
 
         // Parse explicitly so zero, negatives, trailing text and overflow fail
         // before opening the listener. Conversion to seconds must also be safe.
-        const auto gapText = globalArguments->getCommandLineOptionValue("timeline-gap-minutes")->toString();
+        const auto gapText = configuration.get<std::string>("timeline.timeline-gap-minutes");
         int64_t gapMinutes = 0;
         const auto parsedGap = std::from_chars(gapText.data(), gapText.data() + gapText.size(), gapMinutes);
         if (parsedGap.ec != std::errc{} || parsedGap.ptr != gapText.data() + gapText.size() ||
             gapMinutes <= 0 || gapMinutes > std::numeric_limits<int64_t>::max() / 60)
         {
-            log->log0(__func__, Logs::CRITICAL, "Invalid --timeline-gap-minutes: expected a positive integer number of minutes.");
+            log->log0(__func__, Logs::CRITICAL, "Invalid timeline-gap-minutes: expected a positive integer number of minutes.");
             return false;
         }
         timelineGapSeconds = gapMinutes * 60;
 
-        const auto excludeFile = globalArguments->getCommandLineOptionValue("tag-exclude-file")->toString();
+        const auto excludeFile = configuration.get<std::string>("timeline.tag-exclude-file");
         if (!excludeFile.empty())
         {
             std::ifstream input(excludeFile);
             if (!input)
             {
-                log->log0(__func__, Logs::CRITICAL, "Cannot read --tag-exclude-file: %s", excludeFile.c_str());
+                log->log0(__func__, Logs::CRITICAL, "Cannot read tag-exclude-file: %s", excludeFile.c_str());
                 return false;
             }
             std::string line;
@@ -205,74 +180,49 @@ public:
                 try { tagExclusions.emplace_back(line, std::regex::ECMAScript | std::regex::optimize); }
                 catch (const std::regex_error &error)
                 {
-                    log->log0(__func__, Logs::CRITICAL, "Invalid --tag-exclude-file regex at %s:%zu: %s", excludeFile.c_str(), lineNumber, error.what());
+                    log->log0(__func__, Logs::CRITICAL, "Invalid tag-exclude-file regex at %s:%zu: %s", excludeFile.c_str(), lineNumber, error.what());
                     return false;
                 }
             }
             if (!input.eof())
             {
-                log->log0(__func__, Logs::CRITICAL, "Cannot read --tag-exclude-file: %s", excludeFile.c_str());
+                log->log0(__func__, Logs::CRITICAL, "Cannot read tag-exclude-file: %s", excludeFile.c_str());
                 return false;
             }
             log->log0(__func__, Logs::INFO, "Loaded %zu tag exclusion rules from %s", tagExclusions.size(), excludeFile.c_str());
         }
 
-        bool configUseIPv4 = globalArguments->getCommandLineOptionBooleanValue("ipv4");
-        auto configThreads = static_cast<uint32_t>(std::stoul(globalArguments->getCommandLineOptionValue("threads")->toString()));
-
-#ifdef WITH_SSL_SUPPORT
-        std::string certfile = globalArguments->getCommandLineOptionValue("certfile")->toString();
-        std::string keyfile = globalArguments->getCommandLineOptionValue("keyfile")->toString();
-        std::string cafile = globalArguments->getCommandLineOptionValue("cafile")->toString();
-#endif
+        bool configUseIPv4 = configuration.get<bool>("http.ipv4");
+        auto configThreads = static_cast<uint32_t>(std::stoul(configuration.get<std::string>("http.threads")));
 
         auto socketTCP = std::make_shared<Mantids30::Network::Sockets::Socket_TCP>();
         std::shared_ptr<Mantids30::Network::Sockets::Socket_Stream> acceptorSocket = socketTCP;
 #ifdef WITH_SSL_SUPPORT
-        auto socketTLS = std::make_shared<Mantids30::Network::Sockets::Socket_TLS>();
-
-        // Set the SO default security level:
-        socketTLS->tlsKeys.setSecurityLevel(-1);
-
-        if ((keyfile.size() && certfile.empty()) || (keyfile.empty() && certfile.size()))
+        if (configuration.get<bool>("tls.enabled"))
         {
-            log->log0(__func__, Logs::CRITICAL, "X.509 Private Key and Cert File should be configured in pairs.");
-            exit(-13);
-            return false;
-        }
-
-        if (keyfile.size())
-        {
-            if (access(keyfile.c_str(), R_OK))
+            const auto keyfile = configuration.get<std::string>("tls.keyfile");
+            const auto certfile = configuration.get<std::string>("tls.certfile");
+            const auto cafile = configuration.get<std::string>("tls.cafile");
+            auto socketTLS = std::make_shared<Mantids30::Network::Sockets::Socket_TLS>();
+            // Use the system's default TLS security level.
+            socketTLS->tlsKeys.setSecurityLevel(-1);
+            if (!socketTLS->tlsKeys.loadPrivateKeyFromPEMFile(keyfile.c_str()))
             {
-                log->log0(__func__, Logs::CRITICAL, "X.509 Private Key not found.");
-                exit(-10);
+                log->log0(__func__, Logs::CRITICAL, "Cannot load tls.keyfile: %s", keyfile.c_str());
                 return false;
             }
-            socketTLS->tlsKeys.loadPrivateKeyFromPEMFile(keyfile.c_str());
-        }
-        if (certfile.size())
-        {
-            if (access(certfile.c_str(), R_OK))
+            if (!socketTLS->tlsKeys.loadPublicKeyFromPEMFile(certfile.c_str()))
             {
-                log->log0(__func__, Logs::CRITICAL, "X.509 Certificate not found.");
-                exit(-11);
+                log->log0(__func__, Logs::CRITICAL, "Cannot load tls.certfile: %s", certfile.c_str());
                 return false;
             }
-            socketTLS->tlsKeys.loadPublicKeyFromPEMFile(certfile.c_str());
-        }
-        if (cafile.size())
-        {
-            if (!fs::exists(cafile))
+            if (!cafile.empty() && !socketTLS->tlsKeys.loadCAFromPEMFile(cafile))
             {
-                log->log0(__func__, Logs::CRITICAL, "X.509 Certificate Authority not found.");
-                exit(-12);
+                log->log0(__func__, Logs::CRITICAL, "Cannot load tls.cafile: %s", cafile.c_str());
                 return false;
             }
-            socketTLS->tlsKeys.loadCAFromPEMFile(cafile);
-        }
-        if (keyfile.size() && certfile.size())
             acceptorSocket = socketTLS;
+        }
 #endif
         acceptorSocket->setUseIPv6(!configUseIPv4);
         if (!acceptorSocket->listenOn(listenPort, listenAddress.c_str()))
@@ -338,9 +288,10 @@ private:
      */
     static void _callbackOnTimeOut(void *, const std::shared_ptr<Mantids30::Network::Sockets::Socket_Stream> &);
 
+    boost::property_tree::ptree configuration;
     std::string listenAddress;
     uint16_t listenPort;
-    int64_t timelineGapSeconds = 30 * 60; ///< CLI-configured inactivity threshold in seconds.
+    int64_t timelineGapSeconds = 30 * 60; ///< INFO-configured inactivity threshold in seconds.
     std::vector<std::regex> tagExclusions; ///< Compiled once during configuration.
     std::optional<TimelineFilter> prefilter; ///< Validated before starting the listener.
     Logs::AppLog *log;
@@ -412,8 +363,28 @@ const webClientParams &UMediaBrowser::getWebClientParameters() const
 
 int main(int argc, char *argv[])
 {
-    UMediaBrowser *main = new UMediaBrowser;
-    return StartApplication(argc, argv, main);
+    if (argc == 2 && (std::string(argv[1]) == "--help" || std::string(argv[1]) == "-h"))
+    {
+        fprintf(stdout, "Usage: %s <configuration.info>\nConfiguration format: Boost.PropertyTree INFO. See uMediaBrowser2.info.example.\n", argv[0]);
+        return 0;
+    }
+    if (argc != 2 || argv[1][0] == '-')
+    {
+        fprintf(stderr, "Usage: %s <configuration.info>\n", argv[0]);
+        return 2;
+    }
+    try
+    {
+        auto *application = new UMediaBrowser(readConfiguration(argv[1]));
+        // The service runtime must not parse application settings or service flags.
+        char *serviceArguments[] = {argv[0], nullptr};
+        return StartApplication(1, serviceArguments, application);
+    }
+    catch (const std::exception &error)
+    {
+        fprintf(stderr, "Invalid configuration '%s': %s\n", argv[1], error.what());
+        return 1;
+    }
 }
 
 std::shared_ptr<Mantids30::Core::Memory::Containers::B_MEM> UMediaBrowser::favicon = nullptr;

@@ -58,9 +58,9 @@ This package contains a lightweight web file browser and media gallery that can 
 %build
 
 %if 0%{?rhel} == 7
-%{cmake} -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=MinSizeRel -DWITH_SSL_SUPPORT=ON -DSSLRHEL7=ON
+%{cmake} -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=MinSizeRel -DSSLRHEL7=ON
 %else
-%{cmake} -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=MinSizeRel -DWITH_SSL_SUPPORT=ON
+%{cmake} -DCMAKE_VERBOSE_MAKEFILE:BOOL=ON -DCMAKE_INSTALL_PREFIX:PATH=/usr -DCMAKE_BUILD_TYPE=MinSizeRel
 %endif
 
 make %{?_smp_mflags}
@@ -100,6 +100,7 @@ ln -s . s390x-redhat-linux-gnu
 
 %files
 %doc
-%{_bindir}/uMediaBrowser
+%{_bindir}/uMediaBrowser2
+%{_datadir}/uMediaBrowser2/
 
 %changelog

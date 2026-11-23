@@ -1,0 +1,82 @@
+; uMediaBrowser2 configuration (Boost.PropertyTree INFO)
+; Run: uMediaBrowser2 /path/to/uMediaBrowser2.info
+; Relative paths use the working directory. Omitted settings keep these defaults.
+
+http
+{
+    ; HTTP Document Root Directory
+    rootdir "."
+
+    ; Local HTTP Port
+    lport "8001"
+
+    ; Use only IPv4
+    ipv4 "true"
+
+    ; Listen Address
+    laddr "*"
+
+    ; Application title shown in browser tab and toolbar
+    title ""
+
+    ; Max Concurrent Connections (Threads)
+    threads "1024"
+
+    ; Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy)
+    use-x-real-ip "false"
+}
+
+permissions
+{
+    ; Allow to get server directories as tar.gz files (on-the-fly)
+    can-archive "false"
+
+    ; Allow file uploads
+    can-upload "false"
+
+    ; Allow overwrite on file uploads and/or delete files
+    can-overwrite "false"
+}
+
+timeline
+{
+    ; Inactivity in minutes that starts a new timeline group (positive integer)
+    timeline-gap-minutes "30"
+
+    ; Hide tag names from the picker and badges using one case-sensitive ECMAScript regex per line
+    tag-exclude-file ""
+}
+
+security
+{
+    ; JSON file with mandatory AND conditions for timeline and folders
+    prefilter ""
+
+    ; HTTP User/Pass File
+    passfile ""
+}
+
+logging
+{
+    ; Journalctl Log Mode (don't print colors or dates)
+    sys "false"
+
+    ; Verbose debug logging (full URIs, per-entry detail)
+    debug "false"
+}
+
+tls
+{
+    ; Set true to serve HTTPS; TLS support is always compiled in.
+    ; When enabled, keyfile and certfile are required PEM files.
+    enabled false
+
+    ; X.509 Certificate Authority Path (if not defined, then without client authentication)
+    cafile ""
+
+    ; X.509 private key PEM file (required when enabled)
+    keyfile ""
+
+    ; X.509 certificate PEM file (required when enabled)
+    certfile ""
+}

@@ -3,6 +3,7 @@
 Run: python3 tests/test_prefilter.py build/timeline/uMediaBrowser2
 Uses the timeline fixture, real HTTP/SQLite, tar/zip readers, and optional Playwright.
 """
+from config_support import config_command
 from contextlib import contextmanager
 import http.cookiejar
 import importlib.util
@@ -57,8 +58,10 @@ class PrefilterTests(unittest.TestCase):
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
         filename = Path(self.library.temp.name)/f'prefilter-{port}.json'
         filename.write_text(json.dumps(self.prefilter if prefilter is None else prefilter))
-        args = [str(timeline.BINARY), '--rootdir', str(self.library.root), '-a', '127.0.0.1', '-l', str(port), '-g']
-        if enabled: args += ['--prefilter', str(filename)]
+        settings = {'http.rootdir': self.library.root, 'http.laddr': '127.0.0.1',
+                    'http.lport': port, 'permissions.can-archive': True}
+        if enabled: settings['security.prefilter'] = filename
+        args = config_command(timeline.BINARY, self.library.temp.name, **settings)
         cookies = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
         url = f'http://127.0.0.1:{port}/'
@@ -246,10 +249,10 @@ class PrefilterTests(unittest.TestCase):
             with self.subTest(content=str(content)[:80]):
                 if content is None: filename.unlink(missing_ok=True)
                 else: filename.write_text(content)
-                result = subprocess.run([str(timeline.BINARY), '--prefilter', str(filename)],
+                result = subprocess.run(config_command(timeline.BINARY, self.library.temp.name, **{'security.prefilter': filename}),
                                         capture_output=True, timeout=5)
                 self.assertNotEqual(result.returncode, 0)
-                self.assertIn(b'Invalid --prefilter', result.stdout+result.stderr)
+                self.assertIn(b'Invalid prefilter', result.stdout+result.stderr)
 
     @unittest.skipUnless(importlib.util.find_spec('playwright') and shutil.which('google-chrome'), 'Requires Playwright and Chrome')
     def test_console_export_and_reset_in_browser(self):

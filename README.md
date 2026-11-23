@@ -61,11 +61,12 @@ when Chrome offers it; it stays hidden when installation is unavailable or the
 app is already running in standalone mode. Chrome may require some interaction
 and time on the page before offering the button.
 
-The app uses your `--title` as its installed name and includes Folders and Timeline
+The app uses your `http.title` as its installed name and includes Folders and Timeline
 app shortcuts. Installation still requires a connection to the server to browse
 media. No service worker or offline media cache is installed.
 
-Serve HTTPS using `--keyfile` and `--certfile`, or a TLS reverse proxy.
+Serve HTTPS with `tls.enabled true`, `tls.keyfile` and `tls.certfile` in the
+configuration (see the TLS example below), or a TLS reverse proxy.
 An ordinary LAN URL such as `http://192.168.1.10:8001` does not meet Chrome's
 HTTPS installation requirements; Chrome may offer a browser shortcut instead.
 Installation assets retain the server's authentication requirements. If `APIKEY`
@@ -79,11 +80,11 @@ See [Chrome's installation criteria](https://web.dev/articles/install-criteria).
 Set a non-empty `APIKEY` environment variable before starting the server to
 require the exact same value in the `API-Key` header on every request.
 Missing or incorrect keys return HTTP 401. An unset or empty `APIKEY` disables
-this requirement. If `--passfile` is also configured, both credentials are required.
+this requirement. If `security.passfile` is also configured, both credentials are required.
 Startup logs announce API key authentication without printing the key.
 
 ```bash
-APIKEY='your-secret-key' ./build/timeline/uMediaBrowser2 --rootdir /path/to/media
+APIKEY='your-secret-key' ./build/timeline/uMediaBrowser2 ./uMediaBrowser2.info
 curl -H 'API-Key: your-secret-key' 'http://localhost:8001/?act=ls'
 ```
 
@@ -94,22 +95,23 @@ The **Folders** button returns to the original browser. Both pages share their
 styles, thumbnail workers, and full-screen viewer.
 
 The timeline uses digiKam's `digikam4.db` through the **libMantids30 SQLite3**
-connector. Set the served directory with `--rootdir`, for example:
+connector. Set `http { rootdir "/home/user/Pictures/Albums/Familiar" }` in the INFO
+configuration, then start the server:
 
 ```bash
-./build/timeline/uMediaBrowser2 --rootdir /home/user/Pictures/Albums/Familiar
+./build/timeline/uMediaBrowser2 ./uMediaBrowser2.info
 ```
 
 Starting at that directory, the server searches its parents up to `/` and opens
 the nearest `digikam4.db` with SQLite's **read-only** `mode=ro`. SQLite must be
 built with URI support (`USE_URI`). The database is never created or modified.
 `AlbumRoots` and `Albums` resolve collection paths; only entries inside
-`--rootdir` enter the timeline. Collection identifiers with `path=` (including
+`http.rootdir` enter the timeline. Collection identifiers with `path=` (including
 percent-encoded paths) and absolute `specificPath` values are supported.
 
 At startup, moved collections are adapted automatically **in memory**. For
 example, `/home/users/name/Albums` can become `/home/albums/Albums` when
-`--rootdir` points there or into one of its subfolders. Detection aligns shared
+`http.rootdir` points there or into one of its subfolders. Detection aligns shared
 directory names, preserves album-relative paths, and probes up to 64 indexed
 files per candidate inside the served root. It accepts only one verified local
 location; ambiguous matches, duplicate target collections and candidates without
@@ -142,10 +144,10 @@ modification date (or 0 if unavailable).
 
 `TimelineDatabase` supplies feed pages, event pages and random samples through
 request-local read-only transactions. SQL joins the digiKam tables, constrains
-paths to `--rootdir`, converts dates, orders the results and filters event time
+paths to `http.rootdir`, converts dates, orders the results and filters event time
 ranges. Rows are consumed one at a time; only the requested page and up to six
 samples per displayed event are retained. SQLite may use temporary storage for
-sorting. Separately, the tag picker scans `--rootdir` at startup and stores the
+sorting. Separately, the tag picker scans `http.rootdir` at startup and stores the
 absolute paths of existing regular files in a named SQLite memory database.
 This snapshot contains paths only, excludes symlinks, and never modifies digiKam.
 
@@ -155,10 +157,11 @@ entries without valid dates are skipped before counting or pagination. Adjacent
 selected capture dates belong to the same event while the pause between adjacent
 images is **less than 30 minutes** by default, regardless of their folders.
 A pause of exactly 30 minutes or longer starts a new group. Configure this
-threshold with a positive integer number of minutes:
+threshold with `timeline { timeline-gap-minutes 30 }` (a positive integer number of minutes)
+in the INFO configuration:
 
 ```bash
-./build/timeline/uMediaBrowser2 --rootdir /home/user/Pictures/Albums/Familiar --timeline-gap-minutes 30
+./build/timeline/uMediaBrowser2 ./uMediaBrowser2.info
 ```
 
 The gap is measured from the previous image, not from the start of the group. If the database is missing or cannot be read, the
@@ -211,7 +214,7 @@ the mandatory prefilter below also applies to folder browsing.
 
 ### Mandatory prefilter
 
-Use `--prefilter /path/to/prefilter.json` to restrict both **Timeline** and
+Set `security { prefilter "/path/to/prefilter.json" }` in the INFO configuration to restrict both **Timeline** and
 **Folders** with a JSON filter using the same fields, operators and groups as
 the timeline editor. For example, this file restricts the library to tag `Family`:
 
@@ -220,7 +223,7 @@ the timeline editor. For example, this file restricts the library to tag `Family
 ```
 
 ```bash
-./build/timeline/uMediaBrowser2 --rootdir /path/to/media --prefilter /path/to/prefilter.json
+./build/timeline/uMediaBrowser2 ./uMediaBrowser2.info
 ```
 
 The server applies **prefilter AND user filter** before timeline grouping,
@@ -234,8 +237,8 @@ metadata and ZIP/TAR downloads respect the same mandatory conditions; directory
 archives contain only matching files.
 
 Filters use digiKam metadata, so a configured prefilter exposes only indexed
-regular files under `--rootdir`, excluding symlinks and unindexed files. This
-also applies to an explicit `{"rules":[]}` prefilter. Without `--prefilter`,
+regular files under `http.rootdir`, excluding symlinks and unindexed files. This
+also applies to an explicit `{"rules":[]}` prefilter. Without `security.prefilter`,
 folder browsing keeps its usual behavior. If digiKam cannot be read while a
 prefilter is active, folder queries fail instead of displaying unfiltered results.
 
@@ -257,7 +260,7 @@ await downloadCurrentFilter('family.json');   // Choose a filename
 
 The export includes the mandatory prefilter AND the applied user conditions
 on Timeline, or the mandatory prefilter alone on Folders. Unapplied editor
-changes are excluded. The exported JSON can be passed directly to `--prefilter`;
+changes are excluded. The exported JSON can be passed directly to `security.prefilter`;
 exports exceeding its size/item limits report an error. The corresponding
 authenticated endpoint is `GET ?act=current_filter&filter=URL_ENCODED_JSON`,
 returning the filter in the usual JSON envelope's `data` property.
@@ -266,7 +269,7 @@ returning the filter in the usual JSON envelope's `data` property.
 
 The tag list excludes digiKam technical tags marked with `internalTag` and the
 entire `_Digikam_Internal_Tags_` branch. It shows only nonblank tags assigned to at least one file in the
-existing-path snapshot under `--rootdir`. Labels show ancestor names to distinguish
+existing-path snapshot under `http.rootdir`. Labels show ancestor names to distinguish
 branches; ancestors without assigned files are not selectable options. Each list
 is resolved with SQL joins between digiKam images/tags and the attached memory
 table, without checking every file on disk. digiKam tag edits are visible on the
@@ -286,14 +289,14 @@ for JPEG/PNG thumbnails. Missing, unreadable or PGF thumbnails fall back to an
 without usable artwork show a generic symbol.
 
 Camera manufacturer, model and lens dropdowns show distinct, nonblank database
-values for files in the same existing-path snapshot, respecting `--rootdir` and
+values for files in the same existing-path snapshot, respecting `http.rootdir` and
 the mandatory prefilter. Options reload when opening the editor; **↻ Rescan gallery**
 also updates the file snapshot and all open dropdowns. A field with no available
 values shows an empty list. Saved unavailable values remain visible as disabled
 options. Existing `contains` conditions keep their substring matching until a
 new dropdown value is selected, which switches the condition to exact matching.
 
-Use `--tag-exclude-file /path/to/hidden-tags.txt` to hide additional tags from the
+Set `timeline { tag-exclude-file "/path/to/hidden-tags.txt" }` in the INFO configuration to hide additional tags from the
 picker and informational badges. Each nonblank line is a case-sensitive ECMAScript regular expression
 searched against the **tag name**, independently of its hierarchy. Use `^` and `$`
 to match a complete name. Lines whose first non-space character is `#` are comments;
@@ -397,6 +400,7 @@ Integration tests create a temporary library and launch a local server. They
 require `convert` and `node` in addition to the built application:
 
 ```bash
+python3 tests/test_config.py build/timeline/uMediaBrowser2
 python3 tests/test_timeline.py build/timeline/uMediaBrowser2
 python3 tests/test_prefilter.py build/timeline/uMediaBrowser2
 python3 tests/test_api_key.py build/timeline/uMediaBrowser2
@@ -447,52 +451,98 @@ strip -x -X -s /opt/osslibs/bin/uMediaBrowser
 upx -9 --ultra-brute /opt/osslibs/bin/uMediaBrowser
 ```
 
-The resulting expected binary size should be: **~200K** without https support (yes, it's still a dinosaur, but at least it will fit in your 5 1/4 floppy disk)
+SSL/TLS support is always compiled in. OpenSSL development files are required
+when building. Choose HTTP or HTTPS at runtime with `tls.enabled`.
 
 
 ### Running Instructions:
 
-Program help:
+The only startup argument is the configuration file:
 
+```bash
+cp uMediaBrowser2.info.example uMediaBrowser2.info
+./build/timeline/uMediaBrowser2 ./uMediaBrowser2.info
 ```
-$ /opt/osslibs/bin/uMediaBrowser -h
-# Unmanarc's Media Browser (uMediaBrowser) v1.0.3 alpha
-# Author:  Aarón Mizrachi (aaron@unmanarc.com)
-# License: AGPL
-# 
 
-Help:
------
+Settings use **Boost.PropertyTree INFO**, organized into sections:
+`http`, `permissions`, `timeline`, `security`, `logging` and `tls`.
+See [uMediaBrowser2.info.example](uMediaBrowser2.info.example) for all settings
+and defaults. Each setting belongs inside its section:
 
-HTTP Options:
--------------
--r --rootdir <value> : HTTP Document Root Directory (default: .)
--l --lport   <value> : Local HTTP Port (default: 8001)
--4 --ipv4            : Use only IPv4 (default: true)
--a --laddr   <value> : Listen Address (default: *)
--t --threads <value> : Max Concurrent Connections (Threads) (default: 1024)
-    --use-x-real-ip : Use X-Real-IP header for client IP in logs instead of the source IP (behind proxy) (default: false)
-
-HTTP Security:
---------------
--p --passfile <value> : HTTP User/Pass File (default: )
-
-Other Options:
---------------
--v --verbose <value> : Set verbosity level. (default: 0)
--h --help            : Show information usage. (default: false)
--s --sys             : Journalctl Log Mode (don't print colors or dates) (default: false)
-
-Server Options:
----------------
--g --can-archive     : Allow to get server directories as tar.gz files (on-the-fly) (default: false)
--u --can-upload      : Allow file uploads (default: false)
--o --can-overwrite   : Allow overwrite on file uploads and/or delete files (default: false)
-
-Service Options:
-----------------
--d --daemon         : Run as daemon. (default: false)
+```text
+http
+{
+    rootdir "/path/to/media"
+    laddr "127.0.0.1"
+    lport 8001
+    threads 1024
+    title "My media library"
+    ipv4 true
+    use-x-real-ip false
+}
+permissions
+{
+    can-archive true
+    can-upload false
+    can-overwrite false
+}
+timeline
+{
+    timeline-gap-minutes 30
+    tag-exclude-file ""
+}
+security
+{
+    passfile ""
+    prefilter ""
+}
+logging
+{
+    sys false
+    debug false
+}
+tls
+{
+    enabled false
+    keyfile ""
+    certfile ""
+    cafile ""
+}
 ```
+
+Omitted sections and keys retain their defaults. Unknown or duplicate sections
+or keys, misplaced settings, invalid booleans and invalid numeric values prevent
+startup. `http.lport` and `http.threads` must be integers from 1 to 65535.
+`timeline.timeline-gap-minutes` must be a positive integer whose conversion to
+seconds fits in a signed 64-bit integer. Relative paths use the process working
+directory. Restart after editing the configuration. `-h` / `--help` prints the
+startup syntax.
+
+To serve HTTPS, set the listening port in `http.lport` and configure:
+
+```text
+tls
+{
+    enabled true
+    keyfile "/etc/uMediaBrowser2/server.key"
+    certfile "/etc/uMediaBrowser2/server.crt"
+    cafile ""
+}
+```
+
+`tls.enabled` explicitly chooses HTTPS (`true`) or HTTP (`false`, the default).
+When enabled, both PEM key and certificate files are required and must load
+successfully before the listener opens. `cafile` optionally enables client
+certificate authentication using the specified PEM CA file. When disabled,
+certificate paths are ignored. SSL/TLS support is always included in the binary.
+
+Verify HTTPS, client certificates and invalid PEM handling with:
+
+```bash
+python3 tests/test_tls.py build/timeline/uMediaBrowser2
+```
+
+This test requires the `openssl` command.
 
 **Security Considerations:**
 
@@ -518,7 +568,7 @@ After=network.target
 Type=simple
 Restart=always
 RestartSec=1
-ExecStart=/opt/osslibs/bin/uMediaBrowser -s -r /isos
+ExecStart=/opt/osslibs/bin/uMediaBrowser2 /etc/uMediaBrowser2.info
 #User=
 #Group=
 
@@ -530,7 +580,8 @@ systemctl daemon-reload
 systemctl enable --now uMediaBrowser.service
 ```
 
-`Don't forget to change the HTTP Document Root directory (eg. /isos) and change the User=/Group= for your specific user/group combination`
+Create `/etc/uMediaBrowser2.info` from the example, set `http { rootdir "/isos" }` and
+`logging { sys true }`, and configure `User=` / `Group=` for your service account.
 
 
 ***

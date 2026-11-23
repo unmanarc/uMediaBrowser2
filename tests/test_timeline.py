@@ -3,6 +3,7 @@
 Run: python3 tests/test_timeline.py build/timeline/uMediaBrowser2
 Requires ImageMagick's convert and node.
 """
+from config_support import config_command
 from contextlib import contextmanager
 import datetime
 import hashlib
@@ -110,7 +111,9 @@ class TimelineTests(unittest.TestCase):
         cls.cookies = http.cookiejar.CookieJar()
         cls.client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cls.cookies))
         cls.log = open(Path(cls.temp.name)/'server.log', 'w+')
-        cls.process = subprocess.Popen([str(BINARY), '--rootdir', str(cls.root), '-a', '127.0.0.1', '-l', str(port), '-o', '-u', '--title', '<Test & library>'],
+        settings = {'http.rootdir': cls.root, 'http.laddr': '127.0.0.1', 'http.lport': port,
+                    'http.title': '<Test & library>', 'permissions.can-overwrite': True, 'permissions.can-upload': True}
+        cls.process = subprocess.Popen(config_command(BINARY, cls.temp.name, **settings),
                                        stdout=cls.log, stderr=cls.log, env=dict(os.environ, TZ='UTC'))
         for _ in range(200):
             if cls.process.poll() is not None:
@@ -783,7 +786,7 @@ class TimelineTests(unittest.TestCase):
             self.assertEqual(self.database.read_bytes(), original)
             self.refresh()
 
-    def test_command_line_group_threshold(self):
+    def test_configuration_group_threshold(self):
         root = self.library/'Threshold'
         root.mkdir()
         with sqlite_connection(self.database) as db:
@@ -800,8 +803,9 @@ class TimelineTests(unittest.TestCase):
             with self.subTest(minutes=minutes), socket.socket() as sock:
                 sock.bind(('127.0.0.1', 0))
                 port = sock.getsockname()[1]
-            args = [str(BINARY), '--rootdir', str(root), '-a', '127.0.0.1', '-l', str(port)]
-            if minutes is not None: args += ['--timeline-gap-minutes', minutes]
+            settings = {'http.rootdir': root, 'http.laddr': '127.0.0.1', 'http.lport': port}
+            if minutes is not None: settings['timeline.timeline-gap-minutes'] = minutes
+            args = config_command(BINARY, self.temp.name, **settings)
             process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                        env=dict(os.environ, TZ='UTC'))
             try:
@@ -821,12 +825,12 @@ class TimelineTests(unittest.TestCase):
                 try: process.wait(timeout=5)
                 except subprocess.TimeoutExpired: process.kill(); process.wait()
         for invalid in ('0', '-1', '1.5', 'abc', '99999999999999999999999'):
-            result = subprocess.run([str(BINARY), '--timeline-gap-minutes', invalid],
+            result = subprocess.run(config_command(BINARY, self.temp.name, **{'timeline.timeline-gap-minutes': invalid}),
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b'Invalid --timeline-gap-minutes', result.stdout+result.stderr)
+            self.assertIn(b'Invalid timeline-gap-minutes', result.stdout+result.stderr)
 
-    def test_command_line_tag_exclusions_hide_badges_without_filtering_media(self):
+    def test_configuration_tag_exclusions_hide_badges_without_filtering_media(self):
         rules = Path(self.temp.name)/'excluded-tags.txt'
         rules.write_bytes(b"# Tag visibility only\r\n\r\n  # Comment\r\n^Aaron$\r\n^O'Brien\r\n")
         with self.filter_library():
@@ -839,7 +843,7 @@ class TimelineTests(unittest.TestCase):
             url = f'http://127.0.0.1:{port}/?'
             cookies = http.cookiejar.CookieJar()
             client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies))
-            args = [str(BINARY), '--rootdir', str(self.root), '-a', '127.0.0.1', '-l', str(port), '--tag-exclude-file', str(rules)]
+            args = config_command(BINARY, self.temp.name, **{'http.rootdir': self.root, 'http.laddr': '127.0.0.1', 'http.lport': port, 'timeline.tag-exclude-file': rules})
             process = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, TZ='UTC'))
             def api(**params):
                 with client.open(url+urllib.parse.urlencode(params), timeout=10) as response:
@@ -887,10 +891,10 @@ class TimelineTests(unittest.TestCase):
                 except subprocess.TimeoutExpired: process.kill(); process.wait()
         for invalid in (rules.with_name('missing-exclusions.txt'), rules):
             rules.write_text('# Comment\n[invalid\n')
-            result = subprocess.run([str(BINARY), '--tag-exclude-file', str(invalid)],
+            result = subprocess.run(config_command(BINARY, self.temp.name, **{'timeline.tag-exclude-file': invalid}),
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn(b'--tag-exclude-file', result.stdout+result.stderr)
+            self.assertIn(b'tag-exclude-file', result.stdout+result.stderr)
             if invalid == rules: self.assertIn((str(rules)+':2').encode(), result.stdout+result.stderr)
 
     def test_validation_and_stale_cursors(self):
@@ -1098,7 +1102,7 @@ class TimelineTests(unittest.TestCase):
                     with socket.socket() as sock:
                         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
                     with tempfile.TemporaryFile(mode='w+') as log:
-                        process = subprocess.Popen([str(BINARY), '--rootdir', str(root), '-a', '127.0.0.1', '-l', str(port)],
+                        process = subprocess.Popen(config_command(BINARY, self.temp.name, **{'http.rootdir': root, 'http.laddr': '127.0.0.1', 'http.lport': port}),
                                                    stdout=log, stderr=log, env=dict(os.environ, TZ='UTC'))
                         try:
                             url = f'http://127.0.0.1:{port}/?'
