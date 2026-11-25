@@ -401,6 +401,51 @@ class TimelineFilterUITests(unittest.TestCase):
         self.open_editor()
         self.assertEqual(self.page.locator('.filter-rule').count(), 0)
 
+    def test_mobile_back_closes_carousel_and_preserves_timeline(self):
+        self.page.set_viewport_size(dict(width=390, height=844))
+        query = self.server.filter_json(dict(field='tag', op='eq', value='Holiday', negate=True))
+        timeline_url = self.server.url+'?'+urllib.parse.urlencode(dict(view='timeline', filter=query))
+        for in_event in (False, True):
+            with self.subTest(in_event=in_event):
+                self.page.goto(self.server.url)
+                self.page.wait_for_function('location.hash !== ""')
+                folders_url = self.page.url
+                self.page.goto(timeline_url)
+                self.page.wait_for_function('feed.loaded')
+                story = self.page.locator('.story').filter(has_text='66 items')
+                if in_event:
+                    story.locator('.story-foot a').click()
+                    self.page.wait_for_function('eventView && eventView.info')
+                photo = self.page.locator('#eventItems .item').nth(5) if in_event else story.locator('.story-photo').first
+                photo.scroll_into_view_if_needed()
+                original_url = self.page.url
+                original_filter = self.page.evaluate('appliedFilter')
+                self.page.evaluate('window.savedFeed = feed; window.savedEvent = eventView')
+                photo.click()
+                self.page.wait_for_function('albumOpen() && albumCurrentPath !== ""')
+                scroll = self.page.evaluate('main.scrollTop')
+                self.page.keyboard.press('ArrowRight')
+                self.page.go_back()
+                self.page.wait_for_function('!albumOpen()')
+                self.assertEqual(self.page.url, original_url)
+                self.assertEqual(self.page.evaluate('appliedFilter'), original_filter)
+                self.assertTrue(self.page.evaluate('feed === savedFeed && eventView === savedEvent'))
+                self.assertEqual(self.page.evaluate('main.scrollTop'), scroll)
+                self.assertEqual(self.page.locator('#albumImg').get_attribute('src'), None)
+                # Explicit close must also remove the preview's history entry.
+                for close in ('button', 'escape'):
+                    photo.click()
+                    self.page.wait_for_function('albumOpen()')
+                    if close == 'button': self.page.locator('#btnAlbumClose').click()
+                    else: self.page.keyboard.press('Escape')
+                    self.page.wait_for_function('!albumOpen() && !(history.state && history.state.mediaPreview)')
+                self.page.go_back()
+                if in_event:
+                    self.page.wait_for_function('mode === "feed"')
+                    self.assertEqual(self.page.url, timeline_url)
+                else:
+                    self.assertEqual(self.page.url, folders_url)
+
     def test_tag_badges_and_carousel_hover_navigation(self):
         name = '<tag> & ñ'
         try:

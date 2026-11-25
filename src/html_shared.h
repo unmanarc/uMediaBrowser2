@@ -447,11 +447,14 @@ function openAlbum(preferName){
     var j = list.findIndex(function(it){ return it.name === state.selected[0]; });
     if (j >= 0) albumIdx = j;
   }
+  // Keep the underlying view (including its filters/hash/scroll) on Back.
+  if (!albumOpen()) history.pushState(Object.assign({}, history.state, {mediaPreview:true}), '', location.href);
   $('#albumLayer').classList.add('open');
   renderAlbum();
 }
 
-function closeAlbum(){
+function closeAlbum(fromHistory){
+  var wasOpen = albumOpen();
   ++albumRenderSerial;
   albumCurrentPath = "";
   document.dispatchEvent(new CustomEvent('albumitemchange', {detail:null}));
@@ -462,7 +465,13 @@ function closeAlbum(){
   v.load();
   $('#albumLayer').classList.remove('open');
   albumIdx = -1;
+  // The close button and Escape consume the same entry as Android/browser Back.
+  if (wasOpen && fromHistory !== true && history.state && history.state.mediaPreview) history.back();
 }
+
+window.addEventListener('popstate', function(){
+  if (albumOpen()) closeAlbum(true);
+});
 
 function albumNav(dir){
   var list = albumList();
