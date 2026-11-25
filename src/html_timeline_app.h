@@ -343,7 +343,6 @@ async function loadFeed(refresh){
     view.status = page.total_events.toLocaleString() + ' events · ' + page.total_items.toLocaleString() + ' items · ' + (view.order === 'asc' ? 'Oldest first' : 'Newest first');
     view.note = !page.total_items ? (filterJSON ? 'No pictures or videos match these filters. Edit the conditions or reset all filters to see your library.' : 'No pictures or videos in this library yet.') : '';
     if (page.error) view.note = page.error;
-    if (page.skipped) view.note += (view.note ? '\n' : '') + 'Some database entries were skipped because their files are missing or unavailable.';
     if (mode === 'feed'){ $('#timelineStatus').textContent = view.status; message(view.note); }
   } catch(error){
     if (view !== feed) return;
