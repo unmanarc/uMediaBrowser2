@@ -443,7 +443,7 @@ function refreshTimeline(invalidate){
   clearThumbs($('#eventItems'));
   $('#feedView').hidden = false; $('#eventView').hidden = true;
   history.replaceState(null,'',location.pathname + '?view=timeline&order=' + timelineOrder + (filterJSON ? '&filter=' + enc(filterJSON) : ''));
-  main.scrollTop = 0; message(''); loadFeed(invalidate !== false);
+  main.scrollTop = 0; message(''); return loadFeed(invalidate !== false);
 }
 function loadMore(){
   var view = active();
@@ -458,6 +458,7 @@ $('#timelineOrder').onchange = function(){
 };
 $('#btnMore').onclick = loadMore;
 $('#btnRefreshTimeline').onclick = function(){ refreshTimeline(); };
+installPullToRefresh(main,function(){ return refreshTimeline(); },function(){ return !active().busy; });
 function setEventList(list){
   $('#eventItems').classList.toggle('event-list',list);
   $('#eventGrid').setAttribute('aria-pressed',String(!list));

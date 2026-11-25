@@ -769,7 +769,7 @@ function showCtxMenu(x, y){
 }
 
 // ---------------- ACTIONS ----------------
-function doRefresh(){ loadDir(state.path); }
+function doRefresh(){ return loadDir(state.path); }
 function selectedPaths(){ return state.selected.map(itemPath); }
 function doDownloadSelected(){
   // Only a single file reaches here: folders and multi-selections are
@@ -1263,6 +1263,7 @@ function upPath(){
 }
 
 function bind(){
+  installPullToRefresh($('#zoneD'),doRefresh);
   $('#btnBack').onclick = function(){ history.back(); };
   $('#btnUp').onclick = function(){ navigate(upPath()); };
   $('#btnRefresh').onclick = doRefresh;

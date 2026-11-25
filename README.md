@@ -61,6 +61,10 @@ when Chrome offers it; it stays hidden when installation is unavailable or the
 app is already running in standalone mode. Chrome may require some interaction
 and time on the page before offering the button.
 
+In Folders and Timeline, pull down at the top of the content and release to
+refresh, just like the Refresh button. A circular indicator shows the gesture
+and remains visible while the refresh is running.
+
 The app uses your `http.title` as its installed name and includes Folders and Timeline
 app shortcuts. Installation still requires a connection to the server to browse
 media. No service worker or offline media cache is installed.

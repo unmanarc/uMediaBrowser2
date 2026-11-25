@@ -21,6 +21,12 @@ body{
   overflow:hidden;
 }
 #app{display:grid;height:100vh;grid-template-columns:minmax(0,1fr);grid-template-rows:60px 48px 1fr 40px;}
+.pull-refresh-surface{overscroll-behavior-y:contain;}
+.pull-refresh-indicator{position:fixed;z-index:100;pointer-events:none;display:flex;align-items:center;justify-content:center;width:42px;height:42px;border:1px solid var(--accent);border-radius:50%;background:var(--panel2);box-shadow:0 3px 12px #0006;}
+.pull-refresh-indicator[hidden]{display:none;}
+.pull-refresh-indicator.loading i{animation:pull-refresh-spin .8s linear infinite;}
+@keyframes pull-refresh-spin{to{transform:rotate(360deg);}}
+@media(prefers-reduced-motion:reduce){.pull-refresh-indicator.loading i{animation:none;}}
 
 /* Shared page header keeps the browse modes in the same place in both views. */
 .app-header{
@@ -348,6 +354,72 @@ inline const std::string SHARED_ALBUM_HTML = R"uSHARED(<!-- Album (full-screen m
 
 inline const std::string SHARED_DOM_JS = R"uSHARED(var $ = function(s, r){ return (r||document).querySelector(s); };
 var $$ = function(s, r){ return Array.prototype.slice.call((r||document).querySelectorAll(s)); };
+
+// Internal scrolling panels do not get the browser's native pull-to-refresh.
+function installPullToRefresh(surface, refresh, canRefresh){
+  surface.classList.add('pull-refresh-surface');
+  var indicator = document.createElement('div');
+  indicator.className = 'pull-refresh-indicator'; indicator.hidden = true;
+  indicator.setAttribute('role','status');
+  indicator.innerHTML = '<i class="ic ic-refresh" aria-hidden="true"></i>';
+  document.body.appendChild(indicator);
+  var start = null, pulling = false, distance = 0, busy = false, suppressClickUntil = 0;
+  var threshold = 80;
+  function reset(){
+    start = null; pulling = false; distance = 0;
+    if (!busy) indicator.hidden = true;
+  }
+  function allowed(){
+    return !busy && (!canRefresh || canRefresh()) &&
+      !document.querySelector('dialog[open], #overlay.open, #albumLayer.open');
+  }
+  function show(){
+    var rect = surface.getBoundingClientRect();
+    indicator.style.left = (rect.left + rect.width / 2 - 21) + 'px';
+    indicator.style.top = (rect.top + Math.min(distance / 2, 60) + 8) + 'px';
+    indicator.firstChild.style.transform = 'rotate(' + (distance * 3) + 'deg)';
+    indicator.setAttribute('aria-label',distance >= threshold ? 'Release to refresh' : 'Pull to refresh');
+    indicator.hidden = false;
+  }
+  surface.addEventListener('touchstart',function(e){
+    reset();
+    if (e.touches.length !== 1 || surface.scrollTop > 0 || !allowed()) return;
+    if (e.target.closest('input, textarea, select, video, audio, [contenteditable]')) return;
+    // A nested scrolling region must keep its own gestures.
+    for (var node = e.target; node && node !== surface; node = node.parentElement){
+      if (node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY)) return;
+    }
+    start = {x:e.touches[0].clientX,y:e.touches[0].clientY};
+  },{passive:true});
+  surface.addEventListener('touchmove',function(e){
+    if (!start) return;
+    if (e.touches.length !== 1 || surface.scrollTop > 0 || !allowed()){ reset(); return; }
+    var dx = e.touches[0].clientX - start.x, dy = e.touches[0].clientY - start.y;
+    if (!pulling){
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      if (dy <= 0 || dy <= Math.abs(dx)){ reset(); return; }
+      pulling = true;
+    }
+    if (!e.cancelable){ reset(); return; }
+    e.preventDefault();
+    distance = Math.max(0,dy);
+    suppressClickUntil = Date.now() + 500;
+    show();
+  },{passive:false});
+  surface.addEventListener('touchend',async function(e){
+    var trigger = pulling && distance >= threshold && e.touches.length === 0 && allowed();
+    reset();
+    if (!trigger) return;
+    busy = true; distance = threshold; show();
+    indicator.classList.add('loading'); indicator.setAttribute('aria-label','Refreshing');
+    try { await refresh(); }
+    finally { busy = false; indicator.classList.remove('loading'); reset(); }
+  },{passive:true});
+  surface.addEventListener('touchcancel',reset,{passive:true});
+  surface.addEventListener('click',function(e){
+    if (Date.now() < suppressClickUntil){ e.preventDefault(); e.stopImmediatePropagation(); }
+  },true);
+}
 
 )uSHARED";
 
