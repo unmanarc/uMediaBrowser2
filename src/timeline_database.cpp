@@ -336,6 +336,8 @@ struct TimelineDatabase::FileSnapshot
 /** @brief Request-local connection and SQL cursor implementation.
  * No Reader survives its API call. The folder validation map caches only
  * canonical-directory checks during that call, never Images records.
+ * Always reopen the discovered path: another process may replace digikam4.db
+ * between requests, leaving an existing connection attached to the old file.
  */
 class TimelineDatabase::Reader
 {

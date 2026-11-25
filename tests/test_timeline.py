@@ -694,6 +694,49 @@ class TimelineTests(unittest.TestCase):
             with sqlite_connection(self.database) as db:
                 db.execute("DELETE FROM Images WHERE name='live.jpg'")
 
+    def test_physical_database_replacement_is_visible_on_next_search(self):
+        """Every request must reopen the path after cp-style and atomic replacement."""
+        query = self.filter_json(dict(field='make', op='eq', value='Replacement camera'))
+        with tempfile.TemporaryDirectory(dir=self.database.parent) as directory:
+            original = Path(directory) / 'original.db'
+            shutil.copyfile(self.database, original)
+            try:
+                for atomic in (False, True):
+                    with self.subTest(atomic=atomic):
+                        shutil.copyfile(original, self.database)
+                        before = self.api(act='timeline')
+                        self.assertEqual(self.api(act='timeline', filter=query)['total_items'], 0)
+                        replacement = Path(directory) / 'replacement.db'
+                        shutil.copyfile(original, replacement)
+                        with sqlite_connection(replacement) as db:
+                            db.execute("DELETE FROM Images WHERE name='dated.jpg'")
+                            db.execute("INSERT OR REPLACE INTO ImageMetadata(imageid,make) "
+                                       "SELECT id,'Replacement camera' FROM Images WHERE name='older.jpg'")
+                        inode = self.database.stat().st_ino
+                        if atomic:
+                            os.replace(replacement, self.database)
+                            self.assertNotEqual(self.database.stat().st_ino, inode)
+                        else:
+                            shutil.copyfile(replacement, self.database)
+                            self.assertEqual(self.database.stat().st_ino, inode)
+                        contents = self.database.read_bytes()
+                        # Plain searches must see the new DB even before Refresh.
+                        page = self.api(act='timeline')
+                        self.assertTrue(page['database_available'], page['error'])
+                        self.assertEqual(page['total_items'], before['total_items'] - 1)
+                        self.assertNotEqual(page['revision'], before['revision'])
+                        filtered = self.api(act='timeline', filter=query)
+                        self.assertEqual(filtered['total_items'], 1)
+                        self.assertEqual(filtered['events'][0]['samples'][0]['name'], 'older.jpg')
+                        self.assertEqual(self.refresh()['total_items'], page['total_items'])
+                        with self.assertRaises(urllib.error.HTTPError) as error:
+                            self.api(act='timeline', cursor=before['next'], revision=before['revision'])
+                        self.assertEqual(error.exception.code, 409)
+                        error.exception.close()
+                        self.assertEqual(self.database.read_bytes(), contents)
+            finally:
+                shutil.copyfile(original, self.database)
+
     def test_missing_after_previous_query_is_never_sent(self):
         events = self.all_events()
         event = next(e for e in events if e['count'] == 1 and e['samples'][0]['name'] == 'dated.jpg')

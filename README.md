@@ -109,6 +109,10 @@ configuration, then start the server:
 Starting at that directory, the server searches its parents up to `/` and opens
 the nearest `digikam4.db` with SQLite's **read-only** `mode=ro`. SQLite must be
 built with URI support (`USE_URI`). The database is never created or modified.
+Each search opens a new connection and closes it when the request ends. Replacing
+`digikam4.db` by copying over it or renaming another database into place is visible
+to the next search or refresh without restarting the server. Pagination from the
+previous database revision is rejected so pages from different versions are not mixed.
 `AlbumRoots` and `Albums` resolve collection paths; only entries inside
 `http.rootdir` enter the timeline. Collection identifiers with `path=` (including
 percent-encoded paths) and absolute `specificPath` values are supported.
